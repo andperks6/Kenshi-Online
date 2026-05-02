@@ -879,8 +879,135 @@ bool Core::InitScanner() {
 // Forward declaration — defined below OnGameLoaded
 static bool SEH_InstallEntityHooks();
 
+// Hook-disable gate. Lets us bisect which hook crashes the game without
+// recompiling. Read once and cached at first use.
+//
+// Two sources, checked in order:
+//   1. File:  <Kenshi dir>\kmp_disable_hooks.txt      (preferred — deterministic)
+//   2. Env:   KMP_DISABLE_HOOKS                       (fallback)
+//
+// File contents = single line, comma-separated, # for comments. Examples:
+//   entity              -- skip entity_hooks::Install()
+//   entity,combat,ai    -- skip three at once
+//   *                   -- skip everything except render (render is required
+//                          for the chat overlay; without it /probe can't be
+//                          typed at all)
+//   (empty/missing)     -- normal: all hooks enabled
+//
+// Hook names: render, entity, combat, squadspawn, chartracker, inventory,
+//             faction, time, ai, movement, squad, resource
+//
+// On first call, this logs the resolved value loudly with the source
+// (FILE / ENV / NONE) so you can confirm the gate was applied.
+
+static std::string LoadHookDisableList(std::string& outSource) {
+    // Trim helper
+    auto trim = [](std::string& s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) s.erase(s.begin());
+        while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t' || s.back()  == '\r' || s.back()  == '\n')) s.pop_back();
+    };
+
+    // 1) File: same directory as kenshi_x64.exe (the process's current dir at startup)
+    char exePath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exePath, sizeof(exePath));
+    std::string exeDir = exePath;
+    size_t slash = exeDir.find_last_of("\\/");
+    if (slash != std::string::npos) exeDir.resize(slash);
+    std::string filePath = exeDir + "\\kmp_disable_hooks.txt";
+
+    FILE* f = nullptr;
+    if (fopen_s(&f, filePath.c_str(), "r") == 0 && f) {
+        char line[1024] = {};
+        std::string content;
+        while (fgets(line, sizeof(line), f)) {
+            std::string s(line);
+            // Strip comments (anything after #)
+            size_t hash = s.find('#');
+            if (hash != std::string::npos) s.resize(hash);
+            trim(s);
+            if (s.empty()) continue;
+            if (!content.empty()) content += ",";
+            content += s;
+        }
+        fclose(f);
+        trim(content);
+        if (!content.empty()) {
+            outSource = "FILE: " + filePath;
+            return content;
+        }
+        outSource = "FILE: " + filePath + " (empty)";
+        return "";
+    }
+
+    // 2) Env var fallback
+    char buf[1024] = {};
+    DWORD len = GetEnvironmentVariableA("KMP_DISABLE_HOOKS", buf, sizeof(buf));
+    if (len > 0 && len < sizeof(buf)) {
+        std::string s(buf, len);
+        trim(s);
+        if (!s.empty()) {
+            outSource = "ENV: KMP_DISABLE_HOOKS";
+            return s;
+        }
+    }
+
+    outSource = "NONE (file " + filePath + " not found, env var unset)";
+    return "";
+}
+
+static bool HookDisabled(const char* name) {
+    struct Cache {
+        std::string list;
+        std::string source;
+    };
+    static const Cache cache = []() {
+        Cache c;
+        c.list = LoadHookDisableList(c.source);
+        // Loud, unmissable log entry — also goes to KenshiOnline_<pid>.log
+        spdlog::info("=========================================================");
+        spdlog::info("  Hook-disable gate active");
+        spdlog::info("    source: {}", c.source);
+        spdlog::info("    value : \"{}\"", c.list);
+        spdlog::info("=========================================================");
+        // OutputDebugString too, in case spdlog file isn't being tailed
+        std::string ods = "KMP: HookDisable source=" + c.source + " value=\"" + c.list + "\"\n";
+        OutputDebugStringA(ods.c_str());
+        // In-game HUD line — visible via Insert key without leaving the game
+        std::string hudMsg = c.list.empty() ? "no overrides (all hooks enabled)"
+                                            : "DISABLE=" + c.list + " (" + c.source + ")";
+        Core::Get().GetNativeHud().LogStep("GATE", hudMsg);
+        return c;
+    }();
+
+    if (cache.list.empty()) return false;
+
+    // Wildcard: all hooks except render (render is required for chat input).
+    if (cache.list == "*" || cache.list == "all") {
+        return std::strcmp(name, "render") != 0;
+    }
+
+    // Comma-separated whitelist match (with trim).
+    const std::string target(name);
+    size_t pos = 0;
+    while (pos < cache.list.size()) {
+        size_t comma = cache.list.find(',', pos);
+        std::string token = cache.list.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.erase(token.begin());
+        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.pop_back();
+        if (token == target) return true;
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return false;
+}
+
 bool Core::InitHooks() {
     bool allOk = true;
+
+    // Force the HookDisable gate to load and log right away (instead of on first
+    // hook check) so it's the first thing visible in the HUD and log.
+    bool _probe = HookDisabled("__probe__");
+    (void)_probe;
 
     // ══════════════════════════════════════════════════════════════
     // ImGui rendering REMOVED — Ogre3D/DX11 conflict.
@@ -889,12 +1016,16 @@ bool Core::InitHooks() {
     // ══════════════════════════════════════════════════════════════
 
     // D3D11 Present hook (WndProc input + OnGameTick fallback, NO ImGui rendering)
-    m_nativeHud.LogStep("HOOK", "D3D11 Present hook...");
-    if (!render_hooks::Install()) {
-        m_nativeHud.LogStep("ERR", "Present hook FAILED");
-        allOk = false;
+    if (HookDisabled("render")) {
+        m_nativeHud.LogStep("SKIP", "Present hook disabled via KMP_DISABLE_HOOKS");
     } else {
-        m_nativeHud.LogStep("OK", "Present hook installed (WndProc + frame tick)");
+        m_nativeHud.LogStep("HOOK", "D3D11 Present hook...");
+        if (!render_hooks::Install()) {
+            m_nativeHud.LogStep("ERR", "Present hook FAILED");
+            allOk = false;
+        } else {
+            m_nativeHud.LogStep("OK", "Present hook installed (WndProc + frame tick)");
+        }
     }
 
     // Input hooks: handled by WndProc in render_hooks now
@@ -908,7 +1039,9 @@ bool Core::InitHooks() {
     // server (via ResumeForNetwork). Character discovery during/after
     // loading uses CharacterIterator instead.
     // ═══════════════════════════════════════════════════════════════════
-    if (m_gameFuncs.CharacterSpawn) {
+    if (HookDisabled("entity")) {
+        m_nativeHud.LogStep("SKIP", "Entity hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.CharacterSpawn) {
         m_nativeHud.LogStep("HOOK", "Entity hooks (CharacterCreate)...");
         if (SEH_InstallEntityHooks()) {
             m_nativeHud.LogStep("OK", "CharacterCreate installed (captures 2, then bypasses)");
@@ -934,7 +1067,9 @@ bool Core::InitHooks() {
     faction_hooks::SetLoading(true);
 
     // Combat hooks (ApplyDamage, CharacterDeath, CharacterKO)
-    if (m_gameFuncs.ApplyDamage) {
+    if (HookDisabled("combat")) {
+        m_nativeHud.LogStep("SKIP", "Combat hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.ApplyDamage) {
         m_nativeHud.LogStep("HOOK", "Combat hooks...");
         if (combat_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Combat hooks installed");
@@ -946,7 +1081,9 @@ bool Core::InitHooks() {
     }
 
     // Squad spawn bypass hooks (for reliable remote character spawning)
-    {
+    if (HookDisabled("squadspawn")) {
+        m_nativeHud.LogStep("SKIP", "Squad spawn bypass disabled via KMP_DISABLE_HOOKS");
+    } else {
         m_nativeHud.LogStep("HOOK", "Squad spawn bypass...");
         if (squad_spawn_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Squad spawn bypass installed");
@@ -956,7 +1093,9 @@ bool Core::InitHooks() {
     }
 
     // Character tracker hooks (animation update — tracks all chars by name)
-    {
+    if (HookDisabled("chartracker")) {
+        m_nativeHud.LogStep("SKIP", "Character tracker disabled via KMP_DISABLE_HOOKS");
+    } else {
         m_nativeHud.LogStep("HOOK", "Character tracker...");
         if (char_tracker_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Character tracker installed");
@@ -966,7 +1105,9 @@ bool Core::InitHooks() {
     }
 
     // Inventory hooks (ItemPickup, ItemDrop, BuyItem)
-    if (m_gameFuncs.ItemPickup) {
+    if (HookDisabled("inventory")) {
+        m_nativeHud.LogStep("SKIP", "Inventory hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.ItemPickup) {
         m_nativeHud.LogStep("HOOK", "Inventory hooks...");
         if (inventory_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Inventory hooks installed");
@@ -978,7 +1119,9 @@ bool Core::InitHooks() {
     }
 
     // Faction hooks (FactionRelation)
-    if (m_gameFuncs.FactionRelation) {
+    if (HookDisabled("faction")) {
+        m_nativeHud.LogStep("SKIP", "Faction hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.FactionRelation) {
         m_nativeHud.LogStep("HOOK", "Faction hooks...");
         if (faction_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Faction hooks installed");
@@ -990,7 +1133,9 @@ bool Core::InitHooks() {
     }
 
     // Time hooks — drives OnGameTick (essential for game loop)
-    if (m_gameFuncs.TimeUpdate) {
+    if (HookDisabled("time")) {
+        m_nativeHud.LogStep("SKIP", "Time hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.TimeUpdate) {
         m_nativeHud.LogStep("HOOK", "Time hooks...");
         if (time_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Time hooks installed");
@@ -1000,7 +1145,9 @@ bool Core::InitHooks() {
     }
 
     // AI hooks (AICreate + AIPackages)
-    if (m_gameFuncs.AICreate) {
+    if (HookDisabled("ai")) {
+        m_nativeHud.LogStep("SKIP", "AI hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.AICreate) {
         m_nativeHud.LogStep("HOOK", "AI hooks...");
         if (ai_hooks::Install()) {
             m_nativeHud.LogStep("OK", "AI hooks installed");
@@ -1194,7 +1341,9 @@ static bool TryDiscoverSquadAddMemberFromVTable(GameFunctions& funcs,
 
 install_hook:
     // Install the squad hook with the discovered function
-    if (squad_hooks::Install()) {
+    if (HookDisabled("squad")) {
+        core.GetNativeHud().LogStep("SKIP", "Squad hooks (vtable) disabled via KMP_DISABLE_HOOKS");
+    } else if (squad_hooks::Install()) {
         spdlog::info("VTableDiscovery: Squad hooks installed successfully");
         core.GetNativeHud().LogStep("OK", "SquadAddMember discovered via vtable + hook installed");
     } else {
@@ -1435,7 +1584,9 @@ void Core::OnGameLoaded() {
     OutputDebugStringA("KMP: OnGameLoaded — installing post-load hooks\n");
 
     // Movement hooks (CharacterMoveTo — null on Steam, position polling works instead)
-    if (m_gameFuncs.CharacterMoveTo) {
+    if (HookDisabled("movement")) {
+        m_nativeHud.LogStep("SKIP", "Movement hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.CharacterMoveTo) {
         if (movement_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Movement hooks installed");
         } else {
@@ -1446,7 +1597,9 @@ void Core::OnGameLoaded() {
     }
 
     // Squad hooks
-    if (m_gameFuncs.SquadAddMember) {
+    if (HookDisabled("squad")) {
+        m_nativeHud.LogStep("SKIP", "Squad hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (m_gameFuncs.SquadAddMember) {
         if (squad_hooks::Install()) {
             m_nativeHud.LogStep("OK", "Squad hooks installed");
         } else {
@@ -1455,7 +1608,9 @@ void Core::OnGameLoaded() {
     }
 
     // Resource hooks (Ogre VTable discovery)
-    if (resource_hooks::Install()) {
+    if (HookDisabled("resource")) {
+        m_nativeHud.LogStep("SKIP", "Resource hooks disabled via KMP_DISABLE_HOOKS");
+    } else if (resource_hooks::Install()) {
         m_nativeHud.LogStep("OK", "Resource hooks installed");
     } else {
         m_nativeHud.LogStep("INFO", "Resource hooks deferred (burst-detection fallback)");
