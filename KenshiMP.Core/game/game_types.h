@@ -647,7 +647,7 @@ using BuyItemFn           = void(__fastcall*)(void* buyer, void* seller, void* i
 using FactionRelationFn   = void(__fastcall*)(void* factionA, void* factionB, float relation);
 
 // AI
-using AICreateFn          = void*(__fastcall*)(void* character, void* faction);
+using AICreateFn          = void(__fastcall*)(void* ai, void* character, void* arg3, void* arg4, void* arg5, void* arg6);
 using AIPackagesFn        = void(__fastcall*)(void* character, void* aiPackage);
 
 // Turret

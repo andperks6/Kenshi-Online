@@ -10,7 +10,12 @@
 namespace kmp::ai_hooks {
 
 // ── Function typedefs ──
-using AICreateFn   = void*(__fastcall*)(void* character, void* faction);
+// AI::create is a constructor-style initializer:
+//   RCX=this, RDX=character, R8/R9=state pointers, stack arg 5 stored at +0x318,
+//   stack arg 6 stored at +0x10. Dropping args 3-6 leaves +0x318 null and crashes
+//   later in AI scoring at game+0x59820D.
+using AICreateFn   = void(__fastcall*)(void* ai, void* character, void* arg3,
+                                       void* arg4, void* arg5, void* arg6);
 using AIPackagesFn = void(__fastcall*)(void* character, void* aiPackage);
 
 // ── State ──
@@ -45,23 +50,23 @@ bool IsRemoteControlled(void* character) {
 
 // ── Hooks ──
 
-static void* __fastcall Hook_AICreate(void* character, void* faction) {
+static void __fastcall Hook_AICreate(void* ai, void* character, void* arg3,
+                                     void* arg4, void* arg5, void* arg6) {
     s_createCount++;
 
     // ALWAYS call the original AICreate — every character needs a valid AI controller.
     // Returning nullptr here was the root cause of crashes when interacting with
     // remote characters: downstream code dereferences the AI controller without
     // null checks (combat, pathfinding, animation state transitions, UI selection).
-    void* result = nullptr;
     __try {
-        result = s_origAICreate(character, faction);
+        s_origAICreate(ai, character, arg3, arg4, arg5, arg6);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         spdlog::error("ai_hooks: AICreate crashed");
-        return nullptr;
+        return;
     }
 
     auto& core = Core::Get();
-    if (!core.IsConnected()) return result;
+    if (!core.IsConnected()) return;
 
     // Check if this is a remote player's character — if so, mark it for
     // AI decision override (movement/tasks blocked, driven by network instead).
@@ -73,17 +78,18 @@ static void* __fastcall Hook_AICreate(void* character, void* faction) {
         if (info.has_value() && info->isRemote) {
             MarkRemoteControlled(character);
             spdlog::info("ai_hooks: AICreate for remote entity {} — AI controller CREATED "
-                         "(decisions will be overridden by network), char=0x{:X}",
-                         netId, (uintptr_t)character);
+                         "(decisions will be overridden by network), ai=0x{:X}, char=0x{:X}",
+                         netId, (uintptr_t)ai, (uintptr_t)character);
         }
     }
 
     if (s_createCount % 100 == 1) {
-        spdlog::debug("ai_hooks: AICreate #{} (char=0x{:X}, faction=0x{:X})",
-                       s_createCount, (uintptr_t)character, (uintptr_t)faction);
+        spdlog::debug("ai_hooks: AICreate #{} (ai=0x{:X}, char=0x{:X}, arg3=0x{:X}, "
+                       "arg4=0x{:X}, arg5=0x{:X}, arg6=0x{:X})",
+                       s_createCount, (uintptr_t)ai, (uintptr_t)character,
+                       (uintptr_t)arg3, (uintptr_t)arg4, (uintptr_t)arg5,
+                       (uintptr_t)arg6);
     }
-
-    return result;
 }
 
 static void __fastcall Hook_AIPackages(void* character, void* aiPackage) {
