@@ -2,6 +2,7 @@
 #include "kmp/types.h"
 #include <string>
 #include <functional>
+#include <vector>
 
 namespace kmp::char_tracker_hooks {
 
@@ -10,7 +11,7 @@ void Uninstall();
 
 struct TrackedChar {
     void* animClassPtr;     // AnimationClassHuman*
-    void* characterPtr;     // CharacterHuman* (at animClass+0x2D8)
+    void* characterPtr;     // CharacterHuman* (auto-discovered from AnimationClassHuman)
     std::string name;
     Vec3 position;
     uint64_t lastSeenTick;
@@ -22,6 +23,7 @@ void* GetLocalPlayerAnimClass();
 void* GetRemotePlayerAnimClass(const std::string& name);
 void SetOnNewCharacter(std::function<void(const TrackedChar&)> callback);
 int GetTrackedCount();
+std::vector<TrackedChar> GetTrackedSnapshot();
 void DumpTrackedChars();
 
 // Process deferred character discoveries from safe game-tick context.

@@ -1505,8 +1505,8 @@ void Core::PollForGameLoad() {
         m_nativeHud.LogStep("GAME", "Loading complete (" + std::to_string(loadingCreates) +
                             " creates, quiet for " + std::to_string(timeSinceCreate) + "ms)");
 
-        // Disable loading passthrough before OnGameLoaded enables full hook
-        entity_hooks::SetLoadingPassthrough(false);
+        // Keep CharacterCreate on the safe passthrough path for OnGameLoaded.
+        entity_hooks::SetLoadingPassthrough(true);
 
         OnGameLoaded();
     } else if (loadingCreates > 0) {
@@ -1534,13 +1534,13 @@ void Core::PollForGameLoad() {
                              "after {} polls with no create events", charCount, s_noCharCount);
                 m_nativeHud.LogStep("GAME", "Game loaded (CharacterIterator fallback, " +
                                     std::to_string(charCount) + " chars)");
-                entity_hooks::SetLoadingPassthrough(false);
+                entity_hooks::SetLoadingPassthrough(true);
                 OnGameLoaded();
             } else if (s_noCharCount >= 60) {
                 spdlog::warn("Core::PollForGameLoad — ultimate fallback: 120s with valid globals, "
                              "no creates, no chars. Assuming loaded.");
                 m_nativeHud.LogStep("GAME", "Game assumed loaded (ultimate fallback after 120s)");
-                entity_hooks::SetLoadingPassthrough(false);
+                entity_hooks::SetLoadingPassthrough(true);
                 OnGameLoaded();
             }
         }
@@ -1720,10 +1720,10 @@ void Core::OnGameLoaded() {
         }
     }
 
-    // Disable loading passthrough — CharacterCreate hook now runs full body.
-    // Loading is complete, so runtime NPC spawns (single/few at a time) go through
-    // the full hook for entity registration, faction capture, and NPC hijack.
-    entity_hooks::SetLoadingPassthrough(false);
+    // Keep CharacterCreate in passthrough mode after loading. The tracker and
+    // shared-save paths discover characters without the full detour, and runtime
+    // CharacterCreate interception has proven unstable in Kenshi.
+    entity_hooks::SetLoadingPassthrough(true);
 
     // Log mod template characters captured during loading passthrough
     {
@@ -1735,15 +1735,8 @@ void Core::OnGameLoaded() {
         }
     }
 
-    // Ensure CharacterCreate hook is enabled (it should already be from install,
-    // but re-enable in case it was disabled by the loading capture code path).
-    if (HookManager::Get().Enable("CharacterCreate")) {
-        spdlog::info("Core::OnGameLoaded — CharacterCreate hook ENABLED (full mode for runtime spawns)");
-        m_nativeHud.LogStep("HOOK", "CharacterCreate enabled (post-load)");
-    } else {
-        spdlog::warn("Core::OnGameLoaded — CharacterCreate Enable() returned false");
-        m_nativeHud.LogStep("WARN", "CharacterCreate enable failed");
-    }
+    spdlog::info("Core::OnGameLoaded - CharacterCreate remains in passthrough mode for stability");
+    m_nativeHud.LogStep("HOOK", "CharacterCreate passthrough (safety)");
 
     // ═══ DUMP ALL FUNCTIONS AND OFFSETS ═══
     {
@@ -3381,12 +3374,13 @@ void Core::HandleSpawnQueue() {
                 } // end spawn cap else
             }
         } else if (!hasFactory) {
-            // Factory not captured yet — try re-enabling CharacterCreate hook.
+            // Factory not captured yet. ResumeForNetwork keeps CharacterCreate
+            // in passthrough mode, so this only refreshes safe resume state.
             if (!s_retriedHookEnable && pendingDuration.count() >= 5) {
                 s_retriedHookEnable = true;
-                spdlog::warn("Core: Factory not captured after 5s — re-enabling CharacterCreate hook");
+                spdlog::warn("Core: Factory not captured after 5s - refreshing entity hook resume state");
                 entity_hooks::ResumeForNetwork();
-                m_nativeHud.LogStep("SPAWN", "Re-enabling CharacterCreate hook...");
+                m_nativeHud.LogStep("SPAWN", "Refreshing entity hook state...");
             }
             if (pendingDuration.count() / 5 != s_lastNotReadyLog) {
                 s_lastNotReadyLog = pendingDuration.count() / 5;
