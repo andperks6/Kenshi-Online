@@ -37,3 +37,16 @@ desktop.ini
 
 # Offset cache (generated at runtime)
 KenshiOnline_offset_cache.json
+
+# Local tooling (Ghidra-MCP scratch, downloads, etc.)
+.tools/
+
+# Local Claude Code overrides — intentionally per-machine
+.claude/settings.local.json
+
+# Backups (mods, configs, etc.)
+*.bak
+*.mod.bak
+
+# Runtime config that may be set per-Kenshi-install
+kmp_disable_hooks.txt
