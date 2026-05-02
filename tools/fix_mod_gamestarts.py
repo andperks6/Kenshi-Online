@@ -1,25 +1,84 @@
 """
-Fix kenshi-online.mod: Remove Player squad references from vanilla game starts.
+Fix kenshi-online.mod game starts.
 
-The mod incorrectly adds "30-kenshi-online.mod" squad to the Singleplayer game start,
-causing 20 Player 1 characters to spawn in every new game. This script patches the
-squad count from 2 to 1 in the Singleplayer entry, effectively removing the Player squad
-while keeping the vanilla squad reference.
+The mod accidentally wires large player squads into starts:
+
+- Singleplayer includes "30-kenshi-online.mod" in its squad list, which points
+  at the copied startoff squad.
+- That copied startoff squad references "19-kenshi-online.mod" with a quantity
+  of 20, causing 20 Player 1 characters to spawn.
+
+Patch both issues while keeping the binary FCS structure size-stable.
 """
 
 import struct
 import shutil
 import os
 
-MOD_DIR = os.path.join(os.path.dirname(__file__), '..', 'mods', 'kenshi-online')
-MOD_PATH = os.path.join(MOD_DIR, 'kenshi-online.mod')
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+MOD_PATHS = [
+    os.path.join(REPO_ROOT, 'kenshi-online.mod'),
+    os.path.join(REPO_ROOT, 'dist', 'kenshi-online.mod'),
+]
 
-# Also patch the copy in data/
-DATA_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
-DATA_MOD_PATH = os.path.join(DATA_DIR, 'kenshi-online.mod')
+def patch_singleplayer_extra_squad(data, path):
+    needle = b'30-kenshi-online.mod'
 
-# Also patch the source copy in KenshiMP/
-SRC_MOD_PATH = os.path.join(os.path.dirname(__file__), '..', 'kenshi-online.mod')
+    # Find the first occurrence: Singleplayer game start's squad list.
+    idx = data.find(needle)
+    if idx == -1:
+        print(f"  SKIP: No '30-kenshi-online.mod' found in {path}")
+        return False
+
+    count_offset = idx - 8
+    count_val = struct.unpack_from('<I', data, count_offset)[0]
+
+    print(f"  Singleplayer extra squad at 0x{idx:04X}, squad count = {count_val}")
+
+    if count_val < 2:
+        print(f"  SKIP: Singleplayer squad count already {count_val}")
+        return False
+
+    struct.pack_into('<I', data, count_offset, count_val - 1)
+
+    # Null out the removed reference length prefix + string. The remaining
+    # vanilla squad reference stays in place and the record length is unchanged.
+    length_offset = idx - 4
+    for i in range(length_offset, idx + len(needle)):
+        data[i] = 0
+
+    print(f"  Patched Singleplayer squad count {count_val} -> {count_val - 1}")
+    return True
+
+
+def patch_startoff_squad_quantity(data, path):
+    # Stable local pattern:
+    #   "squad" count=1 len=20 "19-kenshi-online.mod" quantity=20
+    pattern = (
+        struct.pack('<I', 5) + b'squad' +
+        struct.pack('<I', 1) +
+        struct.pack('<I', 20) + b'19-kenshi-online.mod' +
+        struct.pack('<I', 20)
+    )
+    idx = data.find(pattern)
+    if idx == -1:
+        already = (
+            struct.pack('<I', 5) + b'squad' +
+            struct.pack('<I', 1) +
+            struct.pack('<I', 20) + b'19-kenshi-online.mod' +
+            struct.pack('<I', 1)
+        )
+        if data.find(already) != -1:
+            print("  SKIP: startoff squad quantity already 1")
+            return False
+        print(f"  WARN: startoff squad quantity pattern not found in {path}")
+        return False
+
+    quantity_offset = idx + len(pattern) - 4
+    struct.pack_into('<I', data, quantity_offset, 1)
+    print(f"  Patched startoff squad quantity at 0x{quantity_offset:04X}: 20 -> 1")
+    return True
+
 
 def patch_mod(path):
     if not os.path.exists(path):
@@ -29,47 +88,11 @@ def patch_mod(path):
     with open(path, 'rb') as f:
         data = bytearray(f.read())
 
-    needle = b'30-kenshi-online.mod'
-
-    # Find the FIRST occurrence (Singleplayer game start's squad list)
-    idx = data.find(needle)
-    if idx == -1:
-        print(f"  SKIP: No '30-kenshi-online.mod' found in {path}")
+    changed = False
+    changed |= patch_singleplayer_extra_squad(data, path)
+    changed |= patch_startoff_squad_quantity(data, path)
+    if not changed:
         return False
-
-    # The structure before this reference:
-    #   05 00 00 00 "squad" 02 00 00 00 14 00 00 00 "30-kenshi-online.mod" ...
-    #   "squad" property name, count=2, length=20, reference string
-    #
-    # We need to find the count byte (02) and change it to 01,
-    # AND null out the "30-kenshi-online.mod" reference + its length prefix.
-
-    # Walk back from the reference to find the count
-    # The structure is: count(4 bytes) + length(4 bytes) + string(20 bytes)
-    # So count is at idx - 8, and it should be 02 00 00 00
-    count_offset = idx - 8
-    count_val = struct.unpack_from('<I', data, count_offset)[0]
-
-    print(f"  Found at offset 0x{idx:04X}, squad count = {count_val}")
-
-    if count_val < 2:
-        print(f"  SKIP: Count already {count_val}, nothing to fix")
-        return False
-
-    # Change count from 2 to 1
-    struct.pack_into('<I', data, count_offset, count_val - 1)
-
-    # Null out the length prefix (4 bytes before the string) and the string itself
-    length_offset = idx - 4
-    for i in range(length_offset, idx + len(needle)):
-        data[i] = 0
-
-    # Also fill the gap bytes after the string with zeros (padding that was there)
-    # The reference is followed by 12 bytes of zeros then the next reference
-    # We need to shift the remaining data or leave the zeros
-    # Safest: just zero out the 24 bytes (4 length + 20 string) and leave the zeros
-
-    print(f"  Patched: count {count_val} -> {count_val - 1}, nulled reference at 0x{length_offset:04X}-0x{idx + len(needle):04X}")
 
     # Backup original
     backup_path = path + '.bak'
@@ -84,17 +107,17 @@ def patch_mod(path):
     return True
 
 if __name__ == '__main__':
-    print("=== Fixing kenshi-online.mod: removing Player squad from vanilla game starts ===\n")
+    print("=== Fixing kenshi-online.mod game start player counts ===\n")
 
     patched = 0
-    for path in [MOD_PATH, DATA_MOD_PATH, SRC_MOD_PATH]:
+    for path in MOD_PATHS:
         print(f"Checking: {path}")
         if patch_mod(path):
             patched += 1
         print()
 
     if patched > 0:
-        print(f"Done! Patched {patched} file(s). Player characters will no longer spawn in vanilla game starts.")
-        print("The 'Multiplayer' game start still works correctly.")
+        print(f"Done! Patched {patched} file(s).")
+        print("Singleplayer no longer includes the copied player squad, and the copied startoff squad quantity is 1.")
     else:
         print("No files needed patching.")
