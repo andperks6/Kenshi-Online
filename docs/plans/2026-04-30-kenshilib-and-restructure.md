@@ -180,3 +180,119 @@ the latest "Update" commit's engine refactor turns out to fight us.
 - `docs/offsets.json` annotated with `kenshilib_proposed` fields and a
   `kenshilib_source` ref. Runtime offsets unchanged.
 - No code changes outside docs and submodule plumbing.
+
+### Phase 0.5 — Smoke test on 2026-05-01 (blocker found)
+
+Tried to get to `/probe` for the rotation test. Couldn't. Hit a reproducible
+crash that blocks any in-game testing. Findings:
+
+**The DLL crashes Kenshi 1.0.68 ~16s into world load.** Signature is
+identical across every variation tried tonight:
+
+- `RIP = game+0x59820D` (every time, multiple sessions)
+- `AV: READ at 0x0000000000000060` — null `this`, calling a method whose
+  first field/vtable lookup is at `+0x60`
+- `RAX=0, RCX=0` — null `this` pointer
+- Caller at `game+0x60FDB6` (visible at `[RSP+0x58]` in stack frames)
+- `Last CharacterCreate: #0, OnGameTick step: -1` — crash happens before
+  our `CharacterCreate` hook fires once and before first game tick
+- `Filter: inGame=1 inDll=0 inStub=0` — RIP is in Kenshi's own code,
+  not in our DLL or our hook stubs
+- `R9` varies (3, 4, 6) across sessions — likely a loop iteration count
+  inside the crashing function
+
+**What's been ruled out:**
+
+- ❌ NOT the kenshi-online.mod content. Same crash with mod loaded, mod
+  not loaded, mod's `Singleplayer` startoff edited (squad 20→1), and
+  vanilla scenarios picked instead.
+- ❌ NOT the Kenshi 1.0.68 install on F:. Vanilla Kenshi + 7 normal
+  community mods (without our DLL or our `kenshi-online.mod`) loads cleanly.
+- ❌ NOT a missing terrain plugin. Was missing from `Plugins_x64.cfg`
+  earlier in the session but adding `Plugin=Plugin_Terrain_x64` didn't
+  fix this crash — different earlier crash (DEP/EXECUTE) was Terrain.
+
+**What's confirmed:**
+
+- ✅ The DLL alone is the trigger. Crash signature appears the moment
+  `Plugin=KenshiMP.Core` is enabled, regardless of mod state.
+
+**Strong suspicion** (not verified): the comment at `core.cpp:903-910`
+literally warns about this — *"the 130+ rapid-fire CharacterCreate calls
+through the MovRaxRsp naked detour corrupt the heap. The hook is only
+enabled when connecting to a multiplayer server (via ResumeForNetwork).
+Character discovery during/after loading uses CharacterIterator instead."*
+But the crash hits during early world init, before any character creation,
+so it's likely not the CharacterCreate hook itself but some other hook's
+trampoline / a memory probe that corrupts state.
+
+The DLL also intentionally faults ~53 times per session via
+`Memory::Read<T>` probes (caught by SEH per `core.cpp:183`). Some of
+these run during the loading window.
+
+### Phase 0.6 — Where to pick up next session
+
+Order matters here. Each step is gated on the previous.
+
+1. **Ghidra-MCP: identify what `game+0x59820D` is.** Single highest-leverage
+   action. The function's name/contents tells us whether this is a
+   character/squad/faction/AI/save-load callee — collapses the bisect
+   search space dramatically.
+   - Cross-ref: the caller `game+0x60FDB6` is also worth identifying.
+   - Distance from `CharacterCreate` (`game+0x581770`): `+0x16A9D` — likely
+     a sibling function in the entity/character module.
+
+2. **Hook bisect via env-var gate.** Add a `KMP_DISABLE_HOOKS="hook1,hook2,..."`
+   env-var read in `Core::InitHooks` (`core.cpp:882`) so we can flip hooks
+   off without rebuilding. Then bisect:
+   - Disable everything except `render_hooks` (D3D11 Present — needed for
+     chat/HUD) → does Kenshi load cleanly?
+   - If yes, re-enable in this order until crash recurs:
+     `time_hooks` → `faction_hooks` → `inventory_hooks` →
+     `char_tracker_hooks` → `squad_spawn_hooks` → `combat_hooks` →
+     `entity_hooks` (CharacterCreate, the suspect) → `squad_hooks` →
+     `movement_hooks` → `resource_hooks` → `ai_hooks`.
+   - First hook whose enabling reproduces the crash is the culprit.
+
+3. **Once `/probe` works**, do the rotation `/dump` test (Phase 1 of
+   original plan: char+0x58 vs char+0xB0).
+
+**Workaround if bisect drags on:** strip the DLL down to only what
+`/probe` and `/dump` need — pattern scanner, command registry, Present
+hook for chat overlay, no character-side hooks. Build that as a
+"probe-only" branch so we can do the rotation verification without
+chasing the full crash.
+
+### Test artifacts on disk (session 2026-05-01)
+
+- Crash logs at `<KenshiDir>\KenshiOnline_CRASH.log` — every entry tonight
+  is the same crash signature
+- Per-PID logs `<KenshiDir>\KenshiOnline_<pid>.log` show DLL initialized
+  cleanly, `PollForGameLoad` polls 5-10 times before crash
+- User's Kenshi install is at `F:\SteamLibrary\steamapps\common\Kenshi`
+  (Steam version, no DRM, no Steamless needed)
+- `install.bat` was rewritten this session — single canonical script in
+  repo root, mirrored to `dist/install.bat`. Auto-detects Kenshi across
+  Steam/GOG locations on C-G drives. Honors `KENSHI_DIR` env override.
+
+### Follow-up: useful mattebin fork changes
+
+Reference branch: `https://github.com/mattebin/Kenshi-Online/tree/coop-stability-2026-04`.
+
+High-signal tracker pieces were selectively ported here:
+
+- `CharAnimUpdate` is allowed to resolve to the intentional unaligned
+  mid-function pattern hit.
+- `char_tracker_hooks` auto-discovers the Steam `AnimationClassHuman ->
+  CharacterHuman` backpointer instead of assuming GOG `+0x2D8`.
+
+Known useful changes to evaluate later, after `tracked > 0` is confirmed:
+
+- `117beed`: shared-save position send should prefer `CharacterHuman +
+  character.position` and keep the old animation movement chain only as a
+  fallback. Steam appears to break the old anim-chain read.
+- Faction-pointer matching in `shared_save_sync`: use tracked
+  `CharacterHuman.faction` pointers to disambiguate duplicate placeholder
+  names like `Player 1` / `Player 2`.
+- `FindByPtr` revalidation for shared-save characters instead of revalidating
+  by name, to avoid name-collision regressions.
