@@ -3,243 +3,251 @@ setlocal enabledelayedexpansion
 title KenshiMP Installer
 color 0A
 
+:: ============================================
+::  Kenshi-Online Installer
+:: ============================================
+::  Single canonical install script. Works for:
+::   (A) Developer flow  - sources from .\build\bin\Release\ and .\dist\
+::   (B) End-user flow   - sources from same folder as this script (unzipped dist)
+::  Each artifact is resolved independently so both flows work.
+::
+::  Kenshi install dir auto-detection order:
+::    1. KENSHI_DIR environment variable (override)
+::    2. Same folder as this script (script dropped in Kenshi dir)
+::    3. Parent folder of this script
+::    4. Common Steam / GOG locations across drives C-G
+::    5. Prompt user
+:: ============================================
+
 echo.
 echo  ============================================
-echo   KenshiMP - Kenshi Multiplayer Mod
-echo   One-Click Installer
-echo   made with love by fourzerofour
+echo   Kenshi-Online Installer
 echo  ============================================
 echo.
 
-:: ── Auto-detect Kenshi directory ──
-:: Try common locations, then fall back to asking
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-set "KENSHI_DIR="
+set "BUILD_DIR=%SCRIPT_DIR%\build\bin\Release"
+set "DIST_DIR=%SCRIPT_DIR%\dist"
 
-:: Check if we're already in the Kenshi folder
-if exist "%~dp0kenshi_x64.exe" (
-    set "KENSHI_DIR=%~dp0"
-    goto :found_kenshi
+:: ---------------------------------------------
+:: Resolve source artifacts
+:: ---------------------------------------------
+set "SRC_DLL="
+if exist "%BUILD_DIR%\KenshiMP.Core.dll"   set "SRC_DLL=%BUILD_DIR%\KenshiMP.Core.dll"
+if not defined SRC_DLL if exist "%SCRIPT_DIR%\KenshiMP.Core.dll" set "SRC_DLL=%SCRIPT_DIR%\KenshiMP.Core.dll"
+
+set "SRC_SERVER="
+if exist "%BUILD_DIR%\KenshiMP.Server.exe" set "SRC_SERVER=%BUILD_DIR%\KenshiMP.Server.exe"
+if not defined SRC_SERVER if exist "%SCRIPT_DIR%\KenshiMP.Server.exe" set "SRC_SERVER=%SCRIPT_DIR%\KenshiMP.Server.exe"
+
+set "SRC_MOD="
+if exist "%DIST_DIR%\kenshi-online.mod"    set "SRC_MOD=%DIST_DIR%\kenshi-online.mod"
+if not defined SRC_MOD if exist "%SCRIPT_DIR%\kenshi-online.mod" set "SRC_MOD=%SCRIPT_DIR%\kenshi-online.mod"
+
+set "SRC_MAINMENU="
+if exist "%DIST_DIR%\Kenshi_MainMenu.layout"      set "SRC_MAINMENU=%DIST_DIR%\Kenshi_MainMenu.layout"
+if not defined SRC_MAINMENU if exist "%SCRIPT_DIR%\Kenshi_MainMenu.layout" set "SRC_MAINMENU=%SCRIPT_DIR%\Kenshi_MainMenu.layout"
+
+set "SRC_MPPANEL="
+if exist "%DIST_DIR%\Kenshi_MultiplayerPanel.layout"      set "SRC_MPPANEL=%DIST_DIR%\Kenshi_MultiplayerPanel.layout"
+if not defined SRC_MPPANEL if exist "%SCRIPT_DIR%\Kenshi_MultiplayerPanel.layout" set "SRC_MPPANEL=%SCRIPT_DIR%\Kenshi_MultiplayerPanel.layout"
+
+set "SRC_MPHUD="
+if exist "%DIST_DIR%\Kenshi_MultiplayerHUD.layout"      set "SRC_MPHUD=%DIST_DIR%\Kenshi_MultiplayerHUD.layout"
+if not defined SRC_MPHUD if exist "%SCRIPT_DIR%\Kenshi_MultiplayerHUD.layout" set "SRC_MPHUD=%SCRIPT_DIR%\Kenshi_MultiplayerHUD.layout"
+
+:: ---------------------------------------------
+:: Resolve Kenshi install dir
+:: ---------------------------------------------
+:: Honor env override; KENSHI_DIR survives setlocal because it was set before.
+if defined KENSHI_DIR (
+    if exist "%KENSHI_DIR%\kenshi_x64.exe" goto :kenshi_found
+    echo  [WARN] KENSHI_DIR=%KENSHI_DIR% has no kenshi_x64.exe -- ignoring.
+    set "KENSHI_DIR="
 )
 
-:: Check if we're in a subfolder of Kenshi
-if exist "%~dp0..\kenshi_x64.exe" (
-    set "KENSHI_DIR=%~dp0..\"
-    goto :found_kenshi
-)
+if exist "%SCRIPT_DIR%\kenshi_x64.exe"    ( set "KENSHI_DIR=%SCRIPT_DIR%"    & goto :kenshi_found )
+if exist "%SCRIPT_DIR%\..\kenshi_x64.exe" ( set "KENSHI_DIR=%SCRIPT_DIR%\.." & goto :kenshi_found )
 
-:: Try Steam default location
-set "STEAM_KENSHI=C:\Program Files (x86)\Steam\steamapps\common\Kenshi"
-if exist "%STEAM_KENSHI%\kenshi_x64.exe" (
-    set "KENSHI_DIR=%STEAM_KENSHI%"
-    goto :found_kenshi
-)
+call :probe "C:\Program Files (x86)\Steam\steamapps\common\Kenshi" && goto :kenshi_found
+call :probe "C:\Program Files\Steam\steamapps\common\Kenshi"        && goto :kenshi_found
+call :probe "D:\SteamLibrary\steamapps\common\Kenshi"               && goto :kenshi_found
+call :probe "D:\Steam\steamapps\common\Kenshi"                      && goto :kenshi_found
+call :probe "E:\SteamLibrary\steamapps\common\Kenshi"               && goto :kenshi_found
+call :probe "F:\SteamLibrary\steamapps\common\Kenshi"               && goto :kenshi_found
+call :probe "G:\SteamLibrary\steamapps\common\Kenshi"               && goto :kenshi_found
+call :probe "C:\GOG Games\Kenshi"                                   && goto :kenshi_found
+call :probe "C:\Program Files\GOG Galaxy\Games\Kenshi"              && goto :kenshi_found
+call :probe "D:\GOG Games\Kenshi"                                   && goto :kenshi_found
 
-:: Try GOG default
-set "GOG_KENSHI=C:\GOG Games\Kenshi"
-if exist "%GOG_KENSHI%\kenshi_x64.exe" (
-    set "KENSHI_DIR=%GOG_KENSHI%"
-    goto :found_kenshi
-)
-
-:: Ask user
-echo  Could not auto-detect Kenshi installation.
-echo  Please enter the path to your Kenshi folder:
-echo  (The folder containing kenshi_x64.exe)
+echo  Could not auto-detect Kenshi.
+echo  Tip: re-run with KENSHI_DIR set, e.g.
+echo       set "KENSHI_DIR=D:\SteamLibrary\steamapps\common\Kenshi" ^&^& install.bat
 echo.
+echo  Or enter the path manually (folder containing kenshi_x64.exe):
 set /p "KENSHI_DIR=Path: "
 
+:kenshi_found
+if "%KENSHI_DIR:~-1%"=="\" set "KENSHI_DIR=%KENSHI_DIR:~0,-1%"
 if not exist "%KENSHI_DIR%\kenshi_x64.exe" (
-    echo.
     echo  [ERROR] kenshi_x64.exe not found at: %KENSHI_DIR%
-    echo  Make sure you entered the correct Kenshi folder.
-    echo.
     pause
     exit /b 1
 )
 
-:found_kenshi
-:: Remove trailing backslash if present
-if "%KENSHI_DIR:~-1%"=="\" set "KENSHI_DIR=%KENSHI_DIR:~0,-1%"
-
-echo  Found Kenshi at: %KENSHI_DIR%
+echo  Kenshi dir : %KENSHI_DIR%
+echo  Sources:
+echo    DLL      : !SRC_DLL!
+echo    Server   : !SRC_SERVER!
+echo    Mod      : !SRC_MOD!
+echo    MainMenu : !SRC_MAINMENU!
+echo    MP Panel : !SRC_MPPANEL!
+echo    MP HUD   : !SRC_MPHUD!
 echo.
 
-:: ── Check if Kenshi is running ──
+:: ---------------------------------------------
+:: Pre-flight: Kenshi must not be running
+:: ---------------------------------------------
 tasklist /FI "IMAGENAME eq kenshi_x64.exe" 2>NUL | find /I "kenshi_x64.exe" >NUL
 if %errorlevel% equ 0 (
-    echo  [WARNING] Kenshi is currently running!
-    echo  Please close Kenshi before installing.
-    echo.
+    echo  [ERROR] Kenshi is running. Close it before installing.
     pause
     exit /b 1
 )
 
-:: ── Create backups ──
-echo  [1/5] Creating backups...
-
+:: ---------------------------------------------
+:: Step 1 - Backups
+:: ---------------------------------------------
+echo  [1/6] Backups...
 set "BACKUP_DIR=%KENSHI_DIR%\KenshiMP_backup"
 if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
-
-if exist "%KENSHI_DIR%\Plugins_x64.cfg" (
-    if not exist "%BACKUP_DIR%\Plugins_x64.cfg.bak" (
-        copy /Y "%KENSHI_DIR%\Plugins_x64.cfg" "%BACKUP_DIR%\Plugins_x64.cfg.bak" >nul
-        echo         Backed up Plugins_x64.cfg
-    )
+if exist "%KENSHI_DIR%\Plugins_x64.cfg" if not exist "%BACKUP_DIR%\Plugins_x64.cfg.bak" (
+    copy /Y "%KENSHI_DIR%\Plugins_x64.cfg" "%BACKUP_DIR%\Plugins_x64.cfg.bak" >nul
+    echo         Backed up Plugins_x64.cfg
+)
+if exist "%KENSHI_DIR%\data\__mods.list" if not exist "%BACKUP_DIR%\__mods.list.bak" (
+    copy /Y "%KENSHI_DIR%\data\__mods.list" "%BACKUP_DIR%\__mods.list.bak" >nul
+    echo         Backed up __mods.list
+)
+if exist "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" if not exist "%BACKUP_DIR%\Kenshi_MainMenu.layout.bak" (
+    copy /Y "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" "%BACKUP_DIR%\Kenshi_MainMenu.layout.bak" >nul
+    echo         Backed up Kenshi_MainMenu.layout
 )
 
-if exist "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" (
-    if not exist "%BACKUP_DIR%\Kenshi_MainMenu.layout.bak" (
-        copy /Y "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" "%BACKUP_DIR%\Kenshi_MainMenu.layout.bak" >nul
-        echo         Backed up Kenshi_MainMenu.layout
-    )
-)
-
-:: ── Copy DLL ──
-echo  [2/5] Installing KenshiMP.Core.dll...
-
-if exist "%~dp0KenshiMP.Core.dll" (
-    copy /Y "%~dp0KenshiMP.Core.dll" "%KENSHI_DIR%\KenshiMP.Core.dll" >nul
-    if errorlevel 1 (
-        echo  [ERROR] Failed to copy DLL. Is Kenshi running?
-        pause
-        exit /b 1
-    )
-    echo         Copied KenshiMP.Core.dll
-) else (
-    echo  [ERROR] KenshiMP.Core.dll not found in installer folder!
+:: ---------------------------------------------
+:: Step 2 - Core DLL
+:: ---------------------------------------------
+echo  [2/6] KenshiMP.Core.dll...
+if not defined SRC_DLL (
+    echo  [ERROR] DLL not found.
+    echo          Run build.bat first, or place KenshiMP.Core.dll next to this script.
     pause
     exit /b 1
 )
+copy /Y "!SRC_DLL!" "%KENSHI_DIR%\KenshiMP.Core.dll" >nul
+if errorlevel 1 ( echo  [ERROR] Copy failed. & pause & exit /b 1 )
+echo         Copied
 
-:: ── Patch Plugins_x64.cfg ──
-echo  [3/5] Patching Plugins_x64.cfg...
-
+:: ---------------------------------------------
+:: Step 3 - Plugins_x64.cfg
+:: ---------------------------------------------
+echo  [3/6] Plugins_x64.cfg...
 findstr /C:"Plugin=KenshiMP.Core" "%KENSHI_DIR%\Plugins_x64.cfg" >nul 2>&1
 if errorlevel 1 (
     echo Plugin=KenshiMP.Core>> "%KENSHI_DIR%\Plugins_x64.cfg"
-    echo         Added KenshiMP.Core plugin entry
+    echo         Added Plugin=KenshiMP.Core
 ) else (
-    echo         Plugin entry already exists
+    echo         Already present
 )
 
-:: ── Patch Main Menu Layout ──
-echo  [4/5] Patching main menu layout...
-
-findstr /C:"MultiplayerButton" "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" >nul 2>&1
-if errorlevel 1 (
-    echo         Adding MULTIPLAYER button to main menu...
-
-    :: We need to insert the button before the OPTIONS button.
-    :: The OPTIONS button has name="OptionsButton".
-    :: We'll use PowerShell for reliable XML insertion.
-
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "$file = '%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout';" ^
-        "$content = Get-Content $file -Raw;" ^
-        "$mpButton = @'" ^
-"            <Widget type=\""Button\"" skin=\""Kenshi_Button1\"" position_real=\""0.260417 0.582407 0.15625 0.0638889\"" name=\""MultiplayerButton\"">`n" ^
-"                <Property key=\""Caption\"" value=\""MULTIPLAYER\""/>`n" ^
-"                <Property key=\""FontName\"" value=\""Kenshi_PaintedTextFont_Large\""/>`n" ^
-"            </Widget>`n" ^
-"'@;" ^
-        "if ($content -match 'OptionsButton') {" ^
-        "  $optLine = '            <Widget type=\"\"Button\"\" skin=\"\"Kenshi_Button1\"\".*name=\"\"OptionsButton\"\"';" ^
-        "  $content = $content -replace '(?m)(^\s*<Widget[^>]+name=\"\"OptionsButton\"\")', ($mpButton + \"`n`$1\");" ^
-        "  Set-Content $file $content -NoNewline;" ^
-        "  Write-Host '        MULTIPLAYER button added';" ^
-        "} else {" ^
-        "  Write-Host '        [WARNING] Could not find OptionsButton anchor';" ^
-        "}"
-
+:: ---------------------------------------------
+:: Step 4 - Layouts
+:: ---------------------------------------------
+echo  [4/6] GUI layouts...
+if not exist "%KENSHI_DIR%\data\gui\layout" mkdir "%KENSHI_DIR%\data\gui\layout"
+if defined SRC_MPPANEL (
+    copy /Y "!SRC_MPPANEL!" "%KENSHI_DIR%\data\gui\layout\Kenshi_MultiplayerPanel.layout" >nul
+    echo         Kenshi_MultiplayerPanel.layout
+) else (
+    echo  [WARN] Kenshi_MultiplayerPanel.layout not found - in-game MP panel will be missing.
+)
+if defined SRC_MPHUD (
+    copy /Y "!SRC_MPHUD!" "%KENSHI_DIR%\data\gui\layout\Kenshi_MultiplayerHUD.layout" >nul
+    echo         Kenshi_MultiplayerHUD.layout
+)
+if defined SRC_MAINMENU (
+    copy /Y "!SRC_MAINMENU!" "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" >nul
+    echo         Kenshi_MainMenu.layout (pre-patched with MULTIPLAYER button)
+) else (
+    findstr /C:"MultiplayerButton" "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" >nul 2>&1
     if errorlevel 1 (
-        echo         [WARNING] Auto-patch failed. Copying pre-patched layout...
-        if exist "%~dp0Kenshi_MainMenu.layout" (
-            copy /Y "%~dp0Kenshi_MainMenu.layout" "%KENSHI_DIR%\data\gui\layout\Kenshi_MainMenu.layout" >nul
-            echo         Copied pre-patched Kenshi_MainMenu.layout
-        )
+        echo  [WARN] No pre-patched Kenshi_MainMenu.layout, and current layout lacks the
+        echo         MULTIPLAYER button. F1 menu still works in-game.
     )
-) else (
-    echo         MULTIPLAYER button already present
 )
 
-:: ── Copy Multiplayer Layouts ──
-echo  [5/6] Installing multiplayer layouts...
-
-if exist "%~dp0Kenshi_MultiplayerPanel.layout" (
-    copy /Y "%~dp0Kenshi_MultiplayerPanel.layout" "%KENSHI_DIR%\data\gui\layout\Kenshi_MultiplayerPanel.layout" >nul
-    echo         Copied Kenshi_MultiplayerPanel.layout
-) else (
-    echo  [ERROR] Kenshi_MultiplayerPanel.layout not found in installer folder!
+:: ---------------------------------------------
+:: Step 5 - Mod (REQUIRED - game crashes without it)
+:: ---------------------------------------------
+echo  [5/6] kenshi-online.mod (required for player spawning)...
+if not defined SRC_MOD (
+    echo  [ERROR] kenshi-online.mod not found.
+    echo          Looked in: %DIST_DIR%\ and %SCRIPT_DIR%\
+    echo          Without this mod, Kenshi crashes during character creation.
     pause
     exit /b 1
 )
+copy /Y "!SRC_MOD!" "%KENSHI_DIR%\data\kenshi-online.mod" >nul
+echo         Copied to data\
+if not exist "%KENSHI_DIR%\mods\kenshi-online" mkdir "%KENSHI_DIR%\mods\kenshi-online"
+copy /Y "!SRC_MOD!" "%KENSHI_DIR%\mods\kenshi-online\kenshi-online.mod" >nul
+echo         Copied to mods\kenshi-online\
 
-if exist "%~dp0Kenshi_MultiplayerHUD.layout" (
-    copy /Y "%~dp0Kenshi_MultiplayerHUD.layout" "%KENSHI_DIR%\data\gui\layout\Kenshi_MultiplayerHUD.layout" >nul
-    echo         Copied Kenshi_MultiplayerHUD.layout
+if not exist "%KENSHI_DIR%\data\__mods.list" type nul > "%KENSHI_DIR%\data\__mods.list"
+findstr /X /C:"kenshi-online" "%KENSHI_DIR%\data\__mods.list" >nul 2>&1
+if errorlevel 1 (
+    echo kenshi-online>> "%KENSHI_DIR%\data\__mods.list"
+    echo         Added kenshi-online to __mods.list
 ) else (
-    echo  [WARNING] Kenshi_MultiplayerHUD.layout not found (in-game HUD may not work)
+    echo         Already in __mods.list
 )
 
-:: ── Install Multiplayer Mod ──
-echo  [6/7] Installing kenshi-online.mod...
-
-if exist "%~dp0kenshi-online.mod" (
-    :: Copy to data/ (always loaded by the game engine)
-    copy /Y "%~dp0kenshi-online.mod" "%KENSHI_DIR%\data\kenshi-online.mod" >nul
-    echo         Copied kenshi-online.mod to data/
-
-    :: Also copy to mods/kenshi-online/ (standard mod location)
-    if not exist "%KENSHI_DIR%\mods\kenshi-online" mkdir "%KENSHI_DIR%\mods\kenshi-online"
-    copy /Y "%~dp0kenshi-online.mod" "%KENSHI_DIR%\mods\kenshi-online\kenshi-online.mod" >nul
-    echo         Copied kenshi-online.mod to mods/
-
-    :: Add to __mods.list if not present
-    findstr /C:"kenshi-online" "%KENSHI_DIR%\data\__mods.list" >nul 2>&1
+:: ---------------------------------------------
+:: Step 6 - Server (optional)
+:: ---------------------------------------------
+echo  [6/6] KenshiMP.Server.exe...
+if defined SRC_SERVER (
+    copy /Y "!SRC_SERVER!" "%KENSHI_DIR%\KenshiMP.Server.exe" >nul
     if errorlevel 1 (
-        echo kenshi-online>> "%KENSHI_DIR%\data\__mods.list"
-        echo         Added kenshi-online to mod load list
+        echo         [WARN] Copy failed (server running?)
     ) else (
-        echo         kenshi-online already in mod load list
+        echo         Copied
     )
 ) else (
-    echo         [INFO] kenshi-online.mod not in package (mod template spawning disabled)
+    echo         [INFO] Server exe not found (optional - skip if you only join games)
 )
 
-:: ── Copy Server ──
-echo  [7/7] Installing dedicated server...
-
-if exist "%~dp0KenshiMP.Server.exe" (
-    copy /Y "%~dp0KenshiMP.Server.exe" "%KENSHI_DIR%\KenshiMP.Server.exe" >nul
-    echo         Copied KenshiMP.Server.exe
-) else (
-    echo         [INFO] KenshiMP.Server.exe not in package (hosting optional)
-)
-
-:: ── Done ──
 echo.
 echo  ============================================
-echo   Installation complete!
+echo   Install complete.
 echo  ============================================
+echo   Kenshi : %KENSHI_DIR%
+echo   Backup : %BACKUP_DIR%
 echo.
-echo   TO JOIN A GAME:
-echo   1. Launch Kenshi normally
-echo   2. Click MULTIPLAYER on the main menu
-echo   3. Click JOIN GAME, enter the host's IP
-echo   4. Click CONNECT, then click NEW GAME
-echo   5. You'll auto-connect when the world loads!
-echo.
-echo   TO HOST A GAME:
-echo   1. Launch Kenshi normally
-echo   2. Click MULTIPLAYER on the main menu
-echo   3. Click HOST GAME (starts the server)
-echo   4. Port 27800 is auto-forwarded via UPnP
-echo   5. Share your IP with friends!
-echo   6. Click NEW GAME to start playing
-echo.
-echo   Default port: 27800
-echo   Backups saved to: %BACKUP_DIR%
-echo   To uninstall, run uninstall.bat
+echo   Launch Kenshi - F1 in-game opens the MP menu.
+echo   To start a local server: run KenshiMP.Server.exe in the Kenshi dir.
 echo.
 pause
+exit /b 0
+
+:: ---------------------------------------------
+:: :probe <path>  -- sets KENSHI_DIR and returns 0 if path has kenshi_x64.exe
+:: ---------------------------------------------
+:probe
+if exist "%~1\kenshi_x64.exe" (
+    set "KENSHI_DIR=%~1"
+    exit /b 0
+)
+exit /b 1
