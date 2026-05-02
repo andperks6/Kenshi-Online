@@ -75,6 +75,7 @@ struct PatternEntry {
     bool            isResolved      = false;
     bool            isGlobalPointer = false; // True if this is a global pointer, not a function
     bool            critical        = false; // Must-resolve: enables aggressive fallbacks
+    bool            allowUnaligned  = false; // True for intentional mid-function hook sites
     int             retryCount      = 0;
 
     // ── Target pointer (for GameFunctions integration) ──

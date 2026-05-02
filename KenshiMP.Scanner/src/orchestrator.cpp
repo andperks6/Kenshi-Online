@@ -216,12 +216,19 @@ void PatternOrchestrator::RegisterBuiltinPatterns(GameFunctions& funcs) {
         0x004FF47C, &funcs.SquadSpawnBypass);
 
     // Character animation update — fires for EVERY character each frame.
-    // Research mod uses this to track all characters by name in real time.
-    // Pattern from GOG: mov rcx,[rbx+320]; mov [rbx+37C],sil
-    reg("CharAnimUpdate", "entity", "Character animation update tick",
-        "48 8B 8B 20 03 00 00 40 88 B3 7C 03 00 00",
-        nullptr, 0,
-        0x0065F6C7, &funcs.CharAnimUpdate);
+    // This pattern is intentionally mid-function, so the resolved address is
+    // not 16-byte aligned. The hook site has AnimationClassHuman* in RBX.
+    {
+        PatternEntry e;
+        e.id = "CharAnimUpdate";
+        e.category = "entity";
+        e.description = "Character animation update tick";
+        e.pattern = "48 8B 8B 20 03 00 00 40 88 B3 7C 03 00 00";
+        e.hardcodedRVA = 0x0065F6C7;
+        e.targetPtr = &funcs.CharAnimUpdate;
+        e.allowUnaligned = true;
+        Register(std::move(e));
+    }
 
     // ── Game Loop / Time ── (CRITICAL for multiplayer tick)
     reg("GameFrameUpdate", "core", "Main game frame tick",
@@ -510,7 +517,7 @@ void PatternOrchestrator::ResolveEntry(PatternEntry& entry, uintptr_t address,
     // MSVC x64 functions are 16-byte aligned. A non-aligned address from pattern scan
     // or string xref is a mid-function hit (SEH handler block etc.) — reject it so
     // later phases (vtable resolution, call graph) can still try.
-    if (!entry.isGlobalPointer && (address & 0xF) != 0 &&
+    if (!entry.isGlobalPointer && !entry.allowUnaligned && (address & 0xF) != 0 &&
         (method == ResolutionMethod::PatternScan || method == ResolutionMethod::StringXref ||
          method == ResolutionMethod::HardcodedOffset)) {
         spdlog::warn("  Rejecting '{}' = 0x{:X} via {} — NOT 16-byte aligned (0x{:X}), "
