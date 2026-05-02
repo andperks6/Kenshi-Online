@@ -361,6 +361,10 @@ public:
 
     bool IsValid() const { return m_ptr != 0; }
 
+    // Underlying character pointer (for /probe, /dump, debug command output)
+    void* Raw() const { return reinterpret_cast<void*>(m_ptr); }
+    uintptr_t Addr() const { return m_ptr; }
+
     Vec3 GetPosition() const;
     Quat GetRotation() const;
     float GetHealth(BodyPart part) const;

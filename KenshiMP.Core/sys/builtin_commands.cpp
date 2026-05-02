@@ -522,18 +522,128 @@ void CommandRegistry::RegisterBuiltins() {
         return r;
     });
 
-    // /probe — Read all known fields of the primary character
-    Register("probe", "Probe primary character's memory fields", [](const CommandArgs&) -> std::string {
+    // /probe [list|<hex_addr>] — Read all known fields of a character.
+    //   /probe          -- probe registry's primary character; falls back to
+    //                      first character from CharacterIterator if registry
+    //                      empty (works even with entity_hooks disabled)
+    //   /probe list     -- list all known characters via CharacterIterator
+    //   /probe <hex>    -- probe an explicit address
+    Register("probe", "Probe character fields (/probe [list|<hex>])", [](const CommandArgs& args) -> std::string {
         auto& core = Core::Get();
-        void* primaryChar = core.GetPlayerController().GetPrimaryCharacter();
-        if (!primaryChar) return "No primary character found.";
+
+        // ── Sub-mode: /probe list ──
+        // Print a compact list — one valid character per line, chat-panel width
+        // friendly (truncated names, no position).
+        if (!args.args.empty() && args.args[0] == "list") {
+            auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+            game::CharacterIterator it;
+            std::string r = "Tracked=" + std::to_string(tracked.size()) +
+                            ", iter count=" + std::to_string(it.Count()) + ":";
+            char lbuf[128];
+            int idx = 0, valid = 0;
+            for (const auto& tc : tracked) {
+                std::string nm = tc.name;
+                if (nm.size() > 20) nm = nm.substr(0, 17) + "...";
+                snprintf(lbuf, sizeof(lbuf),
+                         "\n[T%d] 0x%012llX '%s'",
+                         idx, (unsigned long long)tc.characterPtr,
+                         nm.empty() ? "(noname)" : nm.c_str());
+                r += lbuf;
+                idx++;
+                valid++;
+                if (valid >= 30) { r += "\n... (more, truncated at 30)"; return r; }
+            }
+            while (it.HasNext()) {
+                game::CharacterAccessor a = it.Next();
+                void* obj = a.Raw();
+                if (!obj) { idx++; continue; }
+                std::string nm = a.GetName();
+                if (nm.size() > 20) nm = nm.substr(0, 17) + "...";
+                snprintf(lbuf, sizeof(lbuf),
+                         "\n[%d] 0x%012llX '%s'",
+                         idx, (unsigned long long)obj,
+                         nm.empty() ? "(noname)" : nm.c_str());
+                r += lbuf;
+                idx++;
+                valid++;
+                if (valid >= 30) { r += "\n... (more, truncated at 30)"; break; }
+            }
+            if (valid == 0) r += "\n(no valid entries)";
+            return r;
+        }
+
+        // ── Resolve target character ──
+        void* primaryChar = nullptr;
+        std::string source = "registry";
+
+        // Explicit address arg: /probe 0x7FF6AABBCC00 or /probe 7FF6AABBCC00
+        if (!args.args.empty()) {
+            const std::string& s = args.args[0];
+            std::string hex = s;
+            if (hex.size() >= 2 && (hex.substr(0, 2) == "0x" || hex.substr(0, 2) == "0X"))
+                hex = hex.substr(2);
+            try {
+                uintptr_t a = std::stoull(hex, nullptr, 16);
+                if (a >= 0x10000 && a < 0x00007FFFFFFFFFFFULL) {
+                    primaryChar = reinterpret_cast<void*>(a);
+                    source = "explicit-arg";
+                }
+            } catch (...) {
+                return "Usage: /probe [list|<hex_addr>]";
+            }
+        }
+
+        // Fall back to registry
+        if (!primaryChar) {
+            primaryChar = core.GetPlayerController().GetPrimaryCharacter();
+            if (primaryChar) source = "registry";
+        }
+
+        // Fall back to animation-tracker discoveries. This path is often available
+        // before CharacterIterator can resolve the GameWorld character list.
+        if (!primaryChar) {
+            auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+            if (!tracked.empty() && tracked[0].characterPtr) {
+                primaryChar = tracked[0].characterPtr;
+                source = "char_tracker[0]";
+            }
+        }
+
+        // Fall back to CharacterIterator (works without entity_hooks).
+        // Walk until we find the first VALID slot — invalid entries (freed,
+        // bad vtable, unaligned) return a null Raw() and we keep going.
+        if (!primaryChar) {
+            game::CharacterIterator it;
+            int total = it.Count();
+            int scanned = 0;
+            while (it.HasNext()) {
+                game::CharacterAccessor a = it.Next();
+                scanned++;
+                if (a.Raw()) {
+                    primaryChar = a.Raw();
+                    char sbuf[64];
+                    snprintf(sbuf, sizeof(sbuf), "iter[%d/%d]", scanned - 1, total);
+                    source = sbuf;
+                    break;
+                }
+            }
+        }
+
+        if (!primaryChar) {
+            int cnt = game::CharacterIterator().Count();
+            char nbuf[160];
+            snprintf(nbuf, sizeof(nbuf),
+                     "No character. registry empty, iter count=%d (all invalid). Try /probe list.",
+                     cnt);
+            return std::string(nbuf);
+        }
 
         uintptr_t ptr = reinterpret_cast<uintptr_t>(primaryChar);
         game::CharacterAccessor accessor(primaryChar);
         auto& co = game::GetOffsets().character;
 
         char buf[128];
-        std::string r = "--- Primary Character Probe ---";
+        std::string r = "--- Character Probe (source: " + source + ") ---";
         snprintf(buf, sizeof(buf), "\n  Address:  0x%012llX", (unsigned long long)ptr);
         r += buf;
 
