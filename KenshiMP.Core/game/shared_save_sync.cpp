@@ -54,15 +54,25 @@ static bool s_hasRemotePosition = false;
 static std::atomic<float> s_remoteGameSpeed{-1.f};
 
 // ── Faction string → character name mapping ──
+static std::string NormalizeFaction(std::string faction) {
+    constexpr const char* modSuffix = ".mod";
+    if (faction.size() >= 4 && faction.compare(faction.size() - 4, 4, modSuffix) == 0) {
+        faction.resize(faction.size() - 4);
+    }
+    return faction;
+}
+
 static std::string FactionToOwnName(const std::string& faction) {
-    if (faction == "10-kenshi-online") return "Player 1";
-    if (faction == "12-kenshi-online") return "Player 2";
+    std::string normalized = NormalizeFaction(faction);
+    if (normalized == "10-kenshi-online") return "Player 1";
+    if (normalized == "12-kenshi-online") return "Player 2";
     return "";
 }
 
 static std::string FactionToOtherName(const std::string& faction) {
-    if (faction == "10-kenshi-online") return "Player 2";
-    if (faction == "12-kenshi-online") return "Player 1";
+    std::string normalized = NormalizeFaction(faction);
+    if (normalized == "10-kenshi-online") return "Player 2";
+    if (normalized == "12-kenshi-online") return "Player 1";
     return "";
 }
 
@@ -146,6 +156,21 @@ static bool SEH_ReadAnimClassPosition(void* animClass, Vec3& out) {
 }
 
 // ── SEH-protected position write to AnimClass chain ──
+static bool SEH_ReadCharacterPosition(void* charPtr, Vec3& out) {
+    __try {
+        uintptr_t charAddr = reinterpret_cast<uintptr_t>(charPtr);
+        if (charAddr < 0x10000 || charAddr > 0x00007FFFFFFFFFFF) return false;
+
+        int posOff = game::GetOffsets().character.position;
+        if (posOff < 0) return false;
+
+        Memory::ReadVec3(charAddr + posOff, out.x, out.y, out.z);
+        return (out.x != 0.f || out.y != 0.f || out.z != 0.f);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static bool SEH_WriteAnimClassPosition(void* animClass, const Vec3& pos) {
     __try {
         uintptr_t animPtr = reinterpret_cast<uintptr_t>(animClass);
@@ -275,7 +300,14 @@ void Update(float deltaTime) {
         s_lastPosSend = now;
 
         Vec3 myPos;
-        if (SEH_ReadAnimClassPosition(s_ownAnimClass, myPos)) {
+        bool gotPos = false;
+        if (s_ownCharPtr) {
+            gotPos = SEH_ReadCharacterPosition(s_ownCharPtr, myPos);
+        }
+        if (!gotPos) {
+            gotPos = SEH_ReadAnimClassPosition(s_ownAnimClass, myPos);
+        }
+        if (gotPos) {
             // Use the existing position update format — the server reads:
             // U32(sourcePlayer) [handled by server from peer], U8(count), then
             // CharacterPosition structs. We need to match this EXACTLY.
