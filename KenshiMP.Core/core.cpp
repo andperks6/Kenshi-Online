@@ -1028,8 +1028,19 @@ bool Core::InitHooks() {
         }
     }
 
-    // Input hooks: handled by WndProc in render_hooks now
-    // input_hooks not needed
+    // Input hooks: WndProc handles UI text, while input_hooks gates Kenshi's
+    // OIS InputHandler so modal MP UI keys do not leak into game actions.
+    if (HookDisabled("input")) {
+        m_nativeHud.LogStep("SKIP", "Input hooks disabled via KMP_DISABLE_HOOKS");
+    } else {
+        m_nativeHud.LogStep("HOOK", "Input hooks...");
+        if (!input_hooks::Install()) {
+            m_nativeHud.LogStep("ERR", "Input hooks FAILED");
+            allOk = false;
+        } else {
+            m_nativeHud.LogStep("OK", "Input hooks installed (OIS gate)");
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // CharacterCreate hook is INSTALLED but DISABLED immediately.
