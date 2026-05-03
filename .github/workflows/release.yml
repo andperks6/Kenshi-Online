@@ -13,10 +13,11 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  build:
-    name: Build & package
+  build-windows:
+    name: Windows client + server zip
     runs-on: windows-latest
 
     steps:
@@ -87,14 +88,14 @@ jobs:
           "ZIP_NAME=$zip"  | Out-File -FilePath $env:GITHUB_ENV -Append
           "ZIP_PATH=$zip"  | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Upload workflow artifact
+      - name: Upload Windows zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_PATH }}
           if-no-files-found: error
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release (Windows zip)
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
         uses: softprops/action-gh-release@v2
         with:
@@ -105,3 +106,112 @@ jobs:
           generate_release_notes: true
           files: ${{ env.ZIP_PATH }}
           fail_on_unmatched_files: true
+
+  build-linux-server:
+    name: Linux server tarball
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build server + master server
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage Linux payload
+        run: |
+          set -eu
+          stage=release/Kenshi-Online-Server-linux-x64
+          mkdir -p "$stage"
+          cp build/bin/KenshiMP.Server "$stage/"
+          cp build/bin/KenshiMP.MasterServer "$stage/"
+          cp dist/server.json "$stage/server.json.example"
+          cp dist/server-docker/README.md "$stage/README.md"
+          ls -la "$stage"
+
+      - name: Tarball Linux payload
+        id: tar
+        run: |
+          set -eu
+          tag="${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}"
+          if [ -z "$tag" ] || [ "$tag" = "main" ]; then
+            tag="dev-$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          tar="Kenshi-Online-Server-${tag}-linux-x64.tar.gz"
+          tar -C release -czf "$tar" "Kenshi-Online-Server-linux-x64"
+          echo "TAR_NAME=$tar"  >> "$GITHUB_ENV"
+          echo "TAR_PATH=$tar"  >> "$GITHUB_ENV"
+          ls -la "$tar"
+
+      - name: Upload Linux tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TAR_NAME }}
+          path: ${{ env.TAR_PATH }}
+          if-no-files-found: error
+
+      - name: Attach Linux tarball to Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
+          files: ${{ env.TAR_PATH }}
+          fail_on_unmatched_files: true
+
+  build-docker:
+    name: Docker server image (GHCR)
+    runs-on: ubuntu-latest
+    # Only push images for real tag releases, not dev workflow_dispatch
+    # runs without a tag_name. Local builds for testing should use
+    # `docker build` from the repo root.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -eu
+          tag="${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}"
+          repo_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${repo_lc}/kenshi-online-server"
+          {
+            echo "TAGS<<EOF"
+            echo "${image}:${tag}"
+            echo "${image}:latest"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ env.TAGS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

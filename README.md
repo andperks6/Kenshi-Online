@@ -28,21 +28,32 @@ Full controls, in-game commands, and troubleshooting:
 
 ## Hosting a Server
 
-Anyone can host. Run `KenshiMP.Server.exe` on your PC or a VPS.
+Anyone can host. Three options, in order of friction:
 
-1. Copy `KenshiMP.Server.exe` (and optionally `server.json`) to the host.
-2. Edit `server.json` (or let it generate defaults):
-   ```json
-   {
-     "serverName": "My Kenshi Server",
-     "port": 27800,
-     "maxPlayers": 16,
-     "pvpEnabled": true,
-     "gameSpeed": 1.0
-   }
-   ```
-3. Run `./KenshiMP.Server.exe` and forward port **27800 UDP** (or rely on UPnP).
-4. Players connect via your IP or find you in the in-game server browser.
+**Docker (recommended for Linux hosts and Unraid)** — pull
+`ghcr.io/andperks6/kenshi-online-server:latest`, mount a `data/` volume,
+done. A Tailscale-sidecar compose recipe avoids opening UDP 27800 to the
+public internet. See [`dist/server-docker/`](dist/server-docker/README.md).
+
+**Windows binary** — copy `KenshiMP.Server.exe` (and optionally
+`server.json`) from the release zip to a Windows host or VPS, run it,
+forward UDP 27800 (or rely on UPnP).
+
+**Master server** — the central server browser registry. Most people
+don't need to run their own; the project hosts a default. To self-host,
+run `KenshiMP.MasterServer.exe` (or use the Docker image with the
+master-server entrypoint override) on UDP 27801.
+
+`server.json` example:
+```json
+{
+  "serverName": "My Kenshi Server",
+  "port": 27800,
+  "maxPlayers": 16,
+  "pvpEnabled": true,
+  "gameSpeed": 1.0
+}
+```
 
 Server console: `status`, `players`, `kick <id>`, `say <msg>`, `save`, `stop`.
 

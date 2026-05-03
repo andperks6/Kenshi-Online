@@ -1,0 +1,23 @@
+# Basic Kenshi-Online dedicated server.
+#
+# Exposes UDP 27800 directly to the host. Use this if your network is
+# already private (LAN, friends-only with port forwarding, or the Unraid
+# host is on Tailscale and you want this container to use the host's
+# tailnet identity via Unraid's native Tailscale-on-Docker integration:
+# https://tailscale.com/docs/integrations/unraid).
+#
+# For a fully self-contained Tailscale identity per server, see
+# docker-compose.tailscale.yml in this directory.
+
+services:
+  kenshi-online-server:
+    image: ghcr.io/andperks6/kenshi-online-server:latest
+    container_name: kenshi-online-server
+    restart: unless-stopped
+    ports:
+      - "27800:27800/udp"
+    volumes:
+      # Persist saves + server.json across restarts.
+      - ./data:/data
+    # Server reads /data/server.json. If it doesn't exist, the server
+    # writes a default file on first run — edit it and restart.

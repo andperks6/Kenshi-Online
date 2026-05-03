@@ -1,0 +1,42 @@
+# Build outputs
+build/
+build-debug/
+out/
+.tools/
+.cache/
+
+# IDE / VS / IntelliSense
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+CMakeUserPresets.json
+
+# Git metadata not needed in build context
+.git/
+.github/
+
+# Distribution + dev artifacts the server image doesn't need
+docs/
+KenshiMP.LiveTest/
+KenshiMP.IntegrationTest/
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Runtime / log
+*.log
+**/__pycache__/
+*.pyc
+
+# Editor swap files
+*.swp
+*.swo

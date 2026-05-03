@@ -2,7 +2,13 @@
 #include "kmp/constants.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
+
+#ifdef _WIN32
 #include <shlobj.h>
+#else
+#include <cstdlib>
+#include <sys/stat.h>
+#endif
 #include <algorithm>
 
 namespace kmp {
@@ -19,6 +25,7 @@ static T Clamp(T value, T lo, T hi) {
 // ── ClientConfig ──
 
 std::string ClientConfig::GetDefaultPath() {
+#ifdef _WIN32
     char path[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, path))) {
         std::string dir = std::string(path) + "\\KenshiMP";
@@ -26,9 +33,19 @@ std::string ClientConfig::GetDefaultPath() {
         return dir + "\\client.json";
     }
     return "client.json";
+#else
+    const char* home = std::getenv("HOME");
+    if (home) {
+        std::string dir = std::string(home) + "/.config/KenshiMP";
+        mkdir(dir.c_str(), 0755);
+        return dir + "/client.json";
+    }
+    return "client.json";
+#endif
 }
 
 std::string ClientConfig::GetInstancePath() {
+#ifdef _WIN32
     // PID-specific config path so multiple game instances don't collide.
     // Each Kenshi process gets its own config file for saving state.
     char path[MAX_PATH];
@@ -39,6 +56,10 @@ std::string ClientConfig::GetInstancePath() {
         return dir + "\\client_" + std::to_string(pid) + ".json";
     }
     return "client.json";
+#else
+    // Server/non-client builds don't use per-instance configs (Kenshi runs only on Windows).
+    return GetDefaultPath();
+#endif
 }
 
 bool ClientConfig::Load(const std::string& path) {

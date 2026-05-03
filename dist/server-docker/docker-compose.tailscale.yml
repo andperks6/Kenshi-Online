@@ -1,0 +1,52 @@
+# Kenshi-Online server with a dedicated Tailscale identity (sidecar).
+#
+# The Tailscale container holds the network namespace; the Kenshi server
+# joins it via `network_mode: service:tailscale`. Players connect via
+# the tailnet hostname (e.g. kenshi-server.tailnet-name.ts.net:27800)
+# without exposing UDP 27800 to the public internet.
+#
+# This is independent of any host-level Tailscale (e.g. Unraid v7's native
+# integration). The two coexist: the host has its own tailnet identity,
+# this container has its own. Pick whichever model suits — host identity
+# (use docker-compose.yml, simpler) or per-server identity (this file,
+# better isolation, server can be moved between hosts on the tailnet).
+#
+# Setup (one-time):
+#   1. Generate an auth key: https://login.tailscale.com/admin/settings/keys
+#      Mark it Reusable + Ephemeral=false + Tag (e.g. tag:game-server).
+#   2. Put the key in .env next to this file:
+#        TS_AUTHKEY=tskey-auth-...
+#   3. docker compose -f docker-compose.tailscale.yml up -d
+#   4. Approve the new node in the admin console if not auto-approved by tag.
+#
+# References:
+#   - https://tailscale.com/kb/1282/docker
+#   - https://tailscale.com/kb/1453/quick-guide-docker
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    hostname: kenshi-online-server
+    container_name: kenshi-online-tailscale
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:?set TS_AUTHKEY in .env}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_EXTRA_ARGS=--accept-dns=false
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+
+  kenshi-online-server:
+    image: ghcr.io/andperks6/kenshi-online-server:latest
+    container_name: kenshi-online-server
+    restart: unless-stopped
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+    volumes:
+      - ./data:/data
