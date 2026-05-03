@@ -36,9 +36,9 @@ struct CharacterOffsets {
     int name          = 0x18;    // Kenshi std::string (KServerMod verified)
     int faction       = 0x10;    // Faction* (KServerMod verified)
     int position      = 0x48;    // Vec3 read-only cached position (KServerMod verified)
-    int rotation      = 0x58;    // Quat rotation (KServerMod verified)
+    int rotation      = 0xB0;    // Quat rotation (KenshiLib + /validate_offsets verified)
     int sceneNode     = -1;      // Ogre::SceneNode* (not yet verified — runtime probe)
-    int aiPackage     = -1;      // AI package pointer (not yet verified)
+    int aiPackage     = 0x650;   // AI package pointer (KenshiLib + /validate_offsets verified)
     int inventory     = 0x2E8;   // Inventory* (KServerMod verified)
     int stats         = 0x450;   // Stats base (KServerMod verified)
     int equipment     = -1;      // Equipment array (runtime probed)
@@ -51,7 +51,7 @@ struct CharacterOffsets {
 
     // Movement
     int moveSpeed     = -1;      // Offset to current move speed float (derived from physics)
-    int animState     = -1;      // Offset to animation state index
+    int animState     = -1;      // Offset to animation state index (not AnimationClass*)
 
     // CE-verified health chain: character+2B8 -> +5F8 -> +40 = health[0]
     // Each body part is +8 stride (health float + stun float per part)
@@ -66,13 +66,13 @@ struct CharacterOffsets {
     //     -> writable Vec3 (+writablePosOffset from CharMovement)
     //       -> x,y,z floats (+writablePosVecOffset within Vec3 struct)
     // Writing here actually moves the character in the physics engine.
-    int animClassOffset      = -1;    // Offset to AnimationClassHuman* on character
+    int animClassOffset      = 0x448; // Offset to AnimationClassHuman* on character
     int charMovementOffset   = 0xC0;  // AnimClass -> CharMovement* (KServerMod verified)
     int writablePosOffset    = 0x320; // CharMovement -> writable position struct
     int writablePosVecOffset = 0x20;  // position struct -> x float
 
-    // Squad pointer (heuristic: near faction in struct)
-    int squad         = -1;      // Offset to KSquad* (discovered at runtime)
+    // ActivePlatoon pointer, used as the squad/platoon association for character tracking.
+    int squad         = 0x658;   // Offset to ActivePlatoon* (KenshiLib + /validate_offsets verified)
 
     // GameData backpointer (template/archetype data)
     int gameDataPtr   = 0x40;    // Offset to GameData* template
@@ -214,9 +214,6 @@ struct GameOffsets {
 
 // Singleton accessor for offsets
 GameOffsets& GetOffsets();
-
-// Initialize offsets from scanner results (call early in startup)
-void InitOffsetsFromScanner();
 
 // PlayerBase bridge: set by Core after pattern resolution, read by CharacterIterator.
 uintptr_t GetResolvedPlayerBase();

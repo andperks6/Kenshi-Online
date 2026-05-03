@@ -992,6 +992,114 @@ void CommandRegistry::RegisterBuiltins() {
         return r;
     });
 
+    // /validate_offsets - Compare KenshiLib-proposed character offsets against live tracked characters.
+    Register("validate_offsets", "Validate proposed character offsets on tracked chars", [](const CommandArgs& args) -> std::string {
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        if (tracked.empty()) return "No tracked characters yet. Load a save and wait for tracked > 0.";
+
+        auto isPtr = [](uintptr_t v) {
+            return v >= 0x10000 && v < 0x00007FFFFFFFFFFFULL && (v & 0x7) == 0;
+        };
+        auto readPtr = [&](uintptr_t base, int off, uintptr_t& out) {
+            out = 0;
+            return Memory::Read(base + off, out) && isPtr(out);
+        };
+        auto quatLooksPlausible = [&](uintptr_t addr, float* outVals) -> bool {
+            float a = 0, b = 0, c = 0, d = 0;
+            if (!Memory::Read(addr, a) || !Memory::Read(addr + 4, b) ||
+                !Memory::Read(addr + 8, c) || !Memory::Read(addr + 12, d)) {
+                return false;
+            }
+            if (outVals) {
+                outVals[0] = a; outVals[1] = b; outVals[2] = c; outVals[3] = d;
+            }
+            float mag = a * a + b * b + c * c + d * d;
+            auto sane = [](float v) { return std::isfinite(v) && v >= -1.05f && v <= 1.05f; };
+            return sane(a) && sane(b) && sane(c) && sane(d) && mag > 0.50f && mag < 1.50f;
+        };
+
+        int sampleLimit = 8;
+        if (!args.args.empty()) {
+            try {
+                sampleLimit = std::max(1, std::min(30, std::stoi(args.args[0])));
+            } catch (...) {
+                return "Usage: /validate_offsets [sample_count]";
+            }
+        }
+
+        struct CandidateStats { int ok = 0; int total = 0; };
+        CandidateStats rot58, rotB0, squad658, ai650, anim448;
+
+        std::string r = "--- KenshiLib Offset Validation ---";
+        r += "\nSamples: " + std::to_string(std::min<int>(sampleLimit, static_cast<int>(tracked.size()))) +
+             " / tracked " + std::to_string(tracked.size());
+        r += "\nCandidates: rot +0x58 vs +0xB0, anim +0x448, ai +0x650, squad +0x658";
+
+        char buf[320];
+        int shown = 0;
+        for (const auto& tc : tracked) {
+            if (!tc.characterPtr) continue;
+            uintptr_t p = reinterpret_cast<uintptr_t>(tc.characterPtr);
+            if (!isPtr(p)) continue;
+
+            float q58[4] = {};
+            float qB0[4] = {};
+            bool ok58 = quatLooksPlausible(p + 0x58, q58);
+            bool okB0 = quatLooksPlausible(p + 0xB0, qB0);
+            rot58.total++; rotB0.total++;
+            if (ok58) rot58.ok++;
+            if (okB0) rotB0.ok++;
+
+            uintptr_t vAnim = 0, vAi = 0, vSquad = 0;
+            bool okAnim = readPtr(p, 0x448, vAnim);
+            bool okAi = readPtr(p, 0x650, vAi);
+            bool okSquad = readPtr(p, 0x658, vSquad);
+            anim448.total++; ai650.total++; squad658.total++;
+            if (okAnim) anim448.ok++;
+            if (okAi) ai650.ok++;
+            if (okSquad) squad658.ok++;
+
+            if (shown < sampleLimit) {
+                std::string nm = tc.name;
+                if (nm.size() > 18) nm = nm.substr(0, 15) + "...";
+                snprintf(buf, sizeof(buf),
+                         "\n[%02d] 0x%012llX '%s'"
+                         "\n  rot58 %s (%.2f %.2f %.2f %.2f)  rotB0 %s (%.2f %.2f %.2f %.2f)"
+                         "\n  +448 anim=%s 0x%llX  +650 ai=%s 0x%llX  +658 squad=%s 0x%llX",
+                         shown,
+                         static_cast<unsigned long long>(p),
+                         nm.empty() ? "(noname)" : nm.c_str(),
+                         ok58 ? "OK" : "--", q58[0], q58[1], q58[2], q58[3],
+                         okB0 ? "OK" : "--", qB0[0], qB0[1], qB0[2], qB0[3],
+                         okAnim ? "OK" : "--", static_cast<unsigned long long>(vAnim),
+                         okAi ? "OK" : "--", static_cast<unsigned long long>(vAi),
+                         okSquad ? "OK" : "--", static_cast<unsigned long long>(vSquad));
+                r += buf;
+                shown++;
+            }
+        }
+
+        auto addSummary = [&](const char* label, const CandidateStats& s) {
+            snprintf(buf, sizeof(buf), "\n%-12s %d/%d plausible", label, s.ok, s.total);
+            r += buf;
+        };
+        r += "\n--- Summary ---";
+        addSummary("rot +0x58", rot58);
+        addSummary("rot +0xB0", rotB0);
+        addSummary("anim +0x448", anim448);
+        addSummary("ai +0x650", ai650);
+        addSummary("squad +0x658", squad658);
+
+        if (rotB0.ok > rot58.ok) {
+            r += "\nConclusion: rotation likely +0xB0.";
+        } else if (rot58.ok > rotB0.ok) {
+            r += "\nConclusion: rotation likely +0x58.";
+        } else {
+            r += "\nConclusion: rotation inconclusive; compare while rotating a character.";
+        }
+        return r;
+    });
+
     // /scan <charptr> [start] [end] — Scan character memory for pointers/values
     Register("scan", "Scan char struct for pointers (/scan <addr> [start] [end])", [](const CommandArgs& args) -> std::string {
         if (args.args.empty()) return "Usage: /scan <hex_addr> [start_offset=0] [end_offset=0x200]";

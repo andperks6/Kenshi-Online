@@ -458,8 +458,8 @@ bool Core::Initialize() {
     m_config.Load(configPath);
     m_nativeHud.LogStep("INIT", "Config loaded");
 
-    // Initialize game offsets (CE fallbacks)
-    game::InitOffsetsFromScanner();
+    // Initialize game offsets from the verified runtime defaults in game_types.h.
+    (void)game::GetOffsets();
 
     // Try to restore runtime-discovered offsets from cache
     if (game::LoadOffsetCache()) {
@@ -2659,7 +2659,8 @@ static bool SEH_WritePositionRotation(void* gameObj, Vec3 pos, Quat rot) {
             if (quatValid) {
                 uintptr_t charPtr = reinterpret_cast<uintptr_t>(gameObj);
 
-                // Safety: read current value first — if the existing value at +0x58
+                // Safety: read current value first. If the existing value at the
+                // configured rotation offset
                 // looks like a pointer (>0x10000), DON'T overwrite it. It might be
                 // a SceneNode* or other Ogre pointer, not a quaternion.
                 uintptr_t existingVal = 0;

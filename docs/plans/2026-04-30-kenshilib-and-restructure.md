@@ -296,3 +296,73 @@ Known useful changes to evaluate later, after `tracked > 0` is confirmed:
   names like `Player 1` / `Player 2`.
 - `FindByPtr` revalidation for shared-save characters instead of revalidating
   by name, to avoid name-collision regressions.
+
+### Current validation status (2026-05-02)
+
+Phase 1 offset validation is complete for the high-risk character fields.
+The runtime table has been promoted from proposed KenshiLib values to
+verified values, based on live `/validate_offsets` runs against Steam
+Kenshi 1.0.68.
+
+Evidence:
+
+- Earlier validation: `98/98` tracked characters plausible for the promoted
+  offsets, `0/98` plausible for old rotation `+0x58`.
+- Fresh validation in `KenshiOnline_44568.log`:
+  - `Samples: 8 / tracked 66`
+  - `rot +0x58    0/66 plausible`
+  - `rot +0xB0    66/66 plausible`
+  - `anim +0x448  66/66 plausible`
+  - `ai +0x650    66/66 plausible`
+  - `squad +0x658 66/66 plausible`
+  - conclusion: rotation is `+0xB0`
+
+Promoted runtime offsets:
+
+| Field | Runtime offset | Status |
+|---|---:|---|
+| `Character::rotation` | `0xB0` | verified live; old `0x58` rejected |
+| `Character::animation` / `animClassOffset` | `0x448` | verified live |
+| `Character::ai` / `aiPackage` | `0x650` | verified live |
+| `Character::platoon` / local `squad` alias | `0x658` | verified live |
+
+Important distinction: `animClassOffset=0x448` is the animation class
+pointer, not the `animState` byte. `animState` remains unknown.
+
+### Character discovery status
+
+`char_tracker_hooks` is now the primary reliable character discovery path.
+It observes the animation update path and auto-discovers
+`AnimationClassHuman -> CharacterHuman`; latest validation showed
+`tracked=66`.
+
+`CharacterIterator` is still present, but should be treated as a diagnostic
+and fallback source only. It attempts:
+
+1. `PlayerBase` as a pointer array.
+2. `GameWorld + characterList` as a `lektor` dynamic array.
+
+Current logs show `PlayerBase` is not a valid character list on this build,
+and the `GameWorld` fallback often exposes only one character while
+`char_tracker` sees the full set. Any sync path that needs the local squad
+or world character list should prefer `char_tracker` and only fall back to
+`CharacterIterator`.
+
+Next code cleanup target:
+
+- Route `Core::SendExistingEntitiesToServer()` and related local-squad sync
+  through `char_tracker_hooks::GetTrackedSnapshot()`.
+- Keep `CharacterIterator` for `/probe`, `/verify`, offset prober fallback,
+  and legacy diagnostics until those callers are migrated or deleted.
+- Reduce remaining per-frame iterator log noise; current code logs only when
+  iterator source/count changes.
+
+### Cleanup completed (2026-05-02)
+
+- Removed `InitOffsetsFromScanner()`, which was a no-op placeholder that only
+  set `discoveredByScanner=false` and logged "Using CE fallback offsets".
+- Startup now initializes offsets by touching `game::GetOffsets()`, whose
+  defaults are the verified runtime table in `game_types.h`.
+- Offset-cache restore no longer overwrites verified defaults for
+  `aiPackage`, `animClassOffset`, or `squad`; it only fills those fields if
+  they are unknown.

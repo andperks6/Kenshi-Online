@@ -417,12 +417,17 @@ bool LoadOffsetCache() {
         }
     };
 
+    auto restoreIfUnknown = [&](const char* key, int& field) {
+        if (field >= 0) return;
+        restore(key, field);
+    };
+
     restore("sceneNode",          offsets.sceneNode);
     restore("isPlayerControlled", offsets.isPlayerControlled);
-    restore("aiPackage",          offsets.aiPackage);
+    restoreIfUnknown("aiPackage", offsets.aiPackage);
     restore("equipment",          offsets.equipment);
-    restore("animClassOffset",    offsets.animClassOffset);
-    restore("squad",              offsets.squad);
+    restoreIfUnknown("animClassOffset", offsets.animClassOffset);
+    restoreIfUnknown("squad", offsets.squad);
     restore("moveSpeed",          offsets.moveSpeed);
     restore("animState",          offsets.animState);
 

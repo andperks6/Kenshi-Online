@@ -19,27 +19,19 @@ GameOffsets& GetOffsets() {
         // The scanner may override these with runtime-discovered values later.
         //
         // Offset status legend:
-        //   Verified values: faction=0x10, name=0x18, position=0x48, rotation=0x58,
-        //                    inventory=0x2E8, stats=0x450, gameSpeed=0x700,
-        //                    characterList=0x0888, zoneManager=0x08B0
-        //   Runtime probed:  equipment, squad, animClassOffset
+        //   Verified values: faction=0x10, name=0x18, position=0x48, rotation=0xB0,
+        //                    inventory=0x2E8, stats=0x450, aiPackage=0x650,
+        //                    animClassOffset=0x448, squad/platoon=0x658,
+        //                    gameSpeed=0x700, characterList=0x0888, zoneManager=0x08B0
+        //   Runtime probed:  equipment
         //   Chain-based:     health (2B8→5F8→40), money (298→78→88), position write
-        //   Unknown (-1):    sceneNode, aiPackage, currentTask, isAlive,
+        //   Unknown (-1):    sceneNode, currentTask, isAlive,
         //                    isPlayerControlled, moveSpeed, animState,
         //                    timeOfDay (on TimeManager not GameWorld), weatherState
         s_offsetsInitialized = true;
         spdlog::info("GameOffsets: Initialized with KServerMod/KenshiLib verified values");
     }
     return s_offsets;
-}
-
-void InitOffsetsFromScanner() {
-    // This would be called with values from the re_scanner.py output
-    // or from the runtime string scanner's offset discovery.
-    // For now, the CE fallbacks in GetOffsets() are used.
-    // When the scanner provides JSON, we can parse it here.
-    s_offsets.discoveredByScanner = false;
-    spdlog::debug("InitOffsetsFromScanner: Using CE fallback offsets");
 }
 
 // ── Runtime Offset Discovery ──
@@ -601,6 +593,22 @@ CharacterIterator::CharacterIterator() {
     Reset();
 }
 
+static void LogIteratorSourceOnce(const char* source, uintptr_t listBase, int count) {
+    static const char* s_lastSource = nullptr;
+    static uintptr_t s_lastListBase = 0;
+    static int s_lastCount = -1;
+
+    if (s_lastSource == source && s_lastListBase == listBase && s_lastCount == count) {
+        return;
+    }
+
+    s_lastSource = source;
+    s_lastListBase = listBase;
+    s_lastCount = count;
+    spdlog::info("CharacterIterator: Using {} - {} characters at 0x{:X}",
+                 source, count, listBase);
+}
+
 void CharacterIterator::Reset() {
     m_index = 0;
     m_count = 0;
@@ -655,8 +663,12 @@ void CharacterIterator::Reset() {
     if (m_listBase != 0) {
         uintptr_t firstEntry = 0;
         if (!Memory::Read(m_listBase, firstEntry) || !isValidHeapPtr(firstEntry)) {
-            spdlog::debug("CharacterIterator: PlayerBase dereference 0x{:X} has no valid entries — trying GameWorld",
-                         m_listBase);
+            static uintptr_t s_lastBadPlayerBase = 0;
+            if (s_lastBadPlayerBase != m_listBase) {
+                s_lastBadPlayerBase = m_listBase;
+                spdlog::debug("CharacterIterator: PlayerBase dereference 0x{:X} has no valid entries - trying GameWorld",
+                              m_listBase);
+            }
             m_listBase = 0;
         }
     }
@@ -689,8 +701,7 @@ void CharacterIterator::Reset() {
                 if (lektorCount > 0 && lektorCount < 10000 && isValidHeapPtr(arrayPtr)) {
                     m_listBase = arrayPtr;
                     m_count = lektorCount;
-                    spdlog::info("CharacterIterator: Using GameWorld lektor (format1) — {} characters at 0x{:X}",
-                                 m_count, m_listBase);
+                    LogIteratorSourceOnce("GameWorld lektor (format1)", m_listBase, m_count);
                     return;
                 }
 
@@ -700,8 +711,7 @@ void CharacterIterator::Reset() {
                 if (lektorCount > 0 && lektorCount < 10000 && isValidHeapPtr(arrayPtr)) {
                     m_listBase = arrayPtr;
                     m_count = lektorCount;
-                    spdlog::info("CharacterIterator: Using GameWorld lektor (format2) — {} characters at 0x{:X}",
-                                 m_count, m_listBase);
+                    LogIteratorSourceOnce("GameWorld lektor (format2)", m_listBase, m_count);
                     return;
                 }
             }
@@ -717,8 +727,7 @@ void CharacterIterator::Reset() {
             if (lektorCount > 0 && lektorCount < 10000 && isValidHeapPtr(arrayPtr)) {
                 m_listBase = arrayPtr;
                 m_count = lektorCount;
-                spdlog::info("CharacterIterator: Using GameWorld-direct lektor (format1) — {} characters at 0x{:X}",
-                             m_count, m_listBase);
+                LogIteratorSourceOnce("GameWorld-direct lektor (format1)", m_listBase, m_count);
                 return;
             }
 
@@ -728,8 +737,7 @@ void CharacterIterator::Reset() {
             if (lektorCount > 0 && lektorCount < 10000 && isValidHeapPtr(arrayPtr)) {
                 m_listBase = arrayPtr;
                 m_count = lektorCount;
-                spdlog::info("CharacterIterator: Using GameWorld-direct lektor (format2) — {} characters at 0x{:X}",
-                             m_count, m_listBase);
+                LogIteratorSourceOnce("GameWorld-direct lektor (format2)", m_listBase, m_count);
                 return;
             }
 

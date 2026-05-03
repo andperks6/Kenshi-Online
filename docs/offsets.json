@@ -1,23 +1,23 @@
 {
   "game_version": "1.0.68",
   "sources": "KServerMod structs.h, KenshiLib GameWorld.h, Cheat Engine tables, lib/kenshilib (BFrizzleFoShizzle fork)",
-  "_kenshilib_note": "Fields with 'kenshilib_proposed' come from lib/kenshilib/Include/kenshi/. Not yet promoted to runtime — must be verified against a running game (see docs/plans/2026-04-30-kenshilib-and-restructure.md Phase 1).",
+  "_kenshilib_note": "Fields marked verified have either prior CE/KServerMod evidence or live /validate_offsets evidence against Kenshi 1.0.68. Remaining kenshilib_proposed fields still need live validation.",
   "character_offsets": {
     "faction":         { "offset": "0x10",  "type": "Faction*",        "source": "KServerMod", "verified": true,  "kenshilib_match": "RootObjectBase::owner @ 0x10" },
     "name":            { "offset": "0x18",  "type": "std::string",     "source": "KServerMod", "verified": true,  "kenshilib_match": "RootObjectBase::displayName @ 0x18" },
     "gameDataPtr":     { "offset": "0x40",  "type": "GameData*",       "source": "KServerMod", "verified": true,  "kenshilib_match": "RootObjectBase::data @ 0x40" },
     "position":        { "offset": "0x48",  "type": "Vec3",            "source": "KServerMod", "verified": true,  "kenshilib_match": "RootObjectBase::pos @ 0x48" },
-    "rotation":        { "offset": "0x58",  "type": "Quat",            "source": "KServerMod", "verified": true,  "kenshilib_proposed": "0xB0", "_warning": "MISMATCH — KenshiLib places Ogre::Quaternion rot at 0xB0 (RootObject), while 0x58 is hand handle (RootObjectBase). Likely explains the 'looks like a pointer' rotation-write heuristic in sync_orchestrator.cpp. VERIFY in running game before changing." },
+    "rotation":        { "offset": "0xB0",  "type": "Quat",            "source": "KenshiLib + runtime /validate_offsets (98/98 plausible)", "verified": true,  "_note": "0x58 was tested live and was 0/98 plausible; KenshiLib places Ogre::Quaternion rot at 0xB0." },
     "inventory":       { "offset": "0x2E8", "type": "Inventory*",      "source": "KServerMod", "verified": true,  "kenshilib_match": "Character::inventory @ 0x2E8" },
     "stats":           { "offset": "0x450", "type": "Stats (inline)",  "source": "KServerMod", "verified": true,  "kenshilib_match": "Character::stats @ 0x450" },
     "sceneNode":       { "offset": "-1",    "type": "SceneNode*",      "source": "unverified", "verified": false, "kenshilib_proposed": "investigate via animation/CharBody pointer" },
-    "aiPackage":       { "offset": "-1",    "type": "AI*",             "source": "unverified", "verified": false, "kenshilib_proposed": "0x650", "kenshilib_field": "Character::ai" },
+    "aiPackage":       { "offset": "0x650", "type": "AI*",             "source": "KenshiLib + runtime /validate_offsets (98/98 plausible)", "verified": true, "kenshilib_field": "Character::ai" },
     "movement":        { "offset": "-1",    "type": "CharMovement*",   "source": "unverified", "verified": false, "kenshilib_proposed": "0x640", "kenshilib_field": "Character::movement" },
     "body":            { "offset": "-1",    "type": "CharBody*",       "source": "unverified", "verified": false, "kenshilib_proposed": "0x648", "kenshilib_field": "Character::body" },
-    "animationClass":  { "offset": "-1",    "type": "AnimationClass*", "source": "unverified", "verified": false, "kenshilib_proposed": "0x448", "kenshilib_field": "Character::animation" },
-    "platoon":         { "offset": "-1",    "type": "ActivePlatoon*",  "source": "unverified", "verified": false, "kenshilib_proposed": "0x658", "kenshilib_field": "Character::platoon" },
+    "animationClass":  { "offset": "0x448", "type": "AnimationClass*", "source": "KenshiLib + runtime /validate_offsets (98/98 plausible)", "verified": true, "kenshilib_field": "Character::animation" },
+    "platoon":         { "offset": "0x658", "type": "ActivePlatoon*",  "source": "KenshiLib + runtime /validate_offsets (98/98 plausible)", "verified": true, "kenshilib_field": "Character::platoon" },
     "equipment":       { "offset": "-1",    "type": "ptr[14]",         "source": "runtime probed", "verified": false, "kenshilib_proposed": "use Character::inventory @ 0x2E8 + per-section accessors via Inventory.h" },
-    "squad":           { "offset": "-1",    "type": "KSquad*",         "source": "runtime probed", "verified": false, "_alias_for": "platoon (see above)" },
+    "squad":           { "offset": "0x658", "type": "ActivePlatoon*",  "source": "runtime /validate_offsets", "verified": true, "_alias_for": "platoon (see above)" },
     "currentTask":     { "offset": "-1",    "type": "uint32 enum",     "source": "unverified", "verified": false, "kenshilib_proposed": "investigate via Character::ai or movement" },
     "isAlive":         { "offset": "-1",    "type": "bool (use accessor)", "source": "use health chain", "verified": false, "kenshilib_proposed": "Character::isDead() RVA 0x620E30" },
     "isPlayerControlled": { "offset": "-1", "type": "bool (use accessor)", "source": "unverified", "verified": false, "kenshilib_proposed": "Character::isPlayerCharacter() RVA 0x790470" },
@@ -40,10 +40,9 @@
       "kenshilib_proposed": "Character::getMoney() RVA 0x790400 — prefer accessor over chain"
     },
     "writable_position": {
-      "chain": "char+animClassOffset -> +0xC0 -> +0x320 -> +0x20",
-      "note": "animClassOffset discovered at runtime (0x60-0x200 probe)",
-      "source": "KServerMod",
-      "kenshilib_proposed": "animClassOffset = 0x448 (Character::animation), so chain = char+0x448 -> +0xC0 -> +0x320 -> +0x20"
+      "chain": "char+0x448 -> +0xC0 -> +0x320 -> +0x20",
+      "note": "animClassOffset 0x448 verified live by /validate_offsets",
+      "source": "KServerMod chain + KenshiLib Character::animation + runtime validation"
     }
   },
   "world_offsets": {

@@ -285,10 +285,13 @@ static SEH_CharData SEH_ReadCharacterData(void* character) {
         Memory::Read(charPtr + 0x4C, result.position.y);
         Memory::Read(charPtr + 0x50, result.position.z);
 
-        Memory::Read(charPtr + 0x58, result.rotation.w);
-        Memory::Read(charPtr + 0x5C, result.rotation.x);
-        Memory::Read(charPtr + 0x60, result.rotation.y);
-        Memory::Read(charPtr + 0x64, result.rotation.z);
+        const int rotOff = game::GetOffsets().character.rotation;
+        if (rotOff >= 0) {
+            Memory::Read(charPtr + rotOff, result.rotation.w);
+            Memory::Read(charPtr + rotOff + 4, result.rotation.x);
+            Memory::Read(charPtr + rotOff + 8, result.rotation.y);
+            Memory::Read(charPtr + rotOff + 12, result.rotation.z);
+        }
 
         Memory::Read(charPtr + 0x10, result.factionPtr);
         if (result.factionPtr > 0x10000 && result.factionPtr < 0x00007FFFFFFFFFFF && (result.factionPtr & 0x7) == 0) {
