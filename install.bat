@@ -6,6 +6,17 @@ color 0A
 :: ============================================
 ::  Kenshi-Online Installer
 :: ============================================
+::  Most players should use KenshiMP.Injector.exe instead — it auto-detects
+::  Kenshi, installs the DLL/mod, edits Plugins_x64.cfg, and launches the game
+::  in one click. This script exists for two cases the Injector does not yet
+::  fully cover:
+::    1. GUI layout install (MainMenu / MultiplayerPanel / MultiplayerHUD).
+::    2. Backups of Plugins_x64.cfg, __mods.list, and Kenshi_MainMenu.layout
+::       before mutation, plus a clean uninstall path.
+::  Until the Injector reaches parity, run this script ONCE on first install
+::  (or after an update that changes the layouts), then use the Injector for
+::  day-to-day launching.
+::
 ::  Single canonical install script. Works for:
 ::   (A) Developer flow  - sources from .\build\bin\Release\ and .\dist\
 ::   (B) End-user flow   - sources from same folder as this script (unzipped dist)
