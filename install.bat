@@ -18,7 +18,7 @@ color 0A
 ::  day-to-day launching.
 ::
 ::  Single canonical install script. Works for:
-::   (A) Developer flow  - sources from .\build\bin\Release\ and .\dist\
+::   (A) Developer flow  - sources from .\build\bin\Release\, root mod, and .\dist\
 ::   (B) End-user flow   - sources from same folder as this script (unzipped dist)
 ::  Each artifact is resolved independently so both flows work.
 ::
@@ -54,8 +54,8 @@ if exist "%BUILD_DIR%\KenshiMP.Server.exe" set "SRC_SERVER=%BUILD_DIR%\KenshiMP.
 if not defined SRC_SERVER if exist "%SCRIPT_DIR%\KenshiMP.Server.exe" set "SRC_SERVER=%SCRIPT_DIR%\KenshiMP.Server.exe"
 
 set "SRC_MOD="
-if exist "%DIST_DIR%\kenshi-online.mod"    set "SRC_MOD=%DIST_DIR%\kenshi-online.mod"
-if not defined SRC_MOD if exist "%SCRIPT_DIR%\kenshi-online.mod" set "SRC_MOD=%SCRIPT_DIR%\kenshi-online.mod"
+if exist "%SCRIPT_DIR%\kenshi-online.mod"  set "SRC_MOD=%SCRIPT_DIR%\kenshi-online.mod"
+if not defined SRC_MOD if exist "%DIST_DIR%\kenshi-online.mod" set "SRC_MOD=%DIST_DIR%\kenshi-online.mod"
 
 set "SRC_MAINMENU="
 if exist "%DIST_DIR%\Kenshi_MainMenu.layout"      set "SRC_MAINMENU=%DIST_DIR%\Kenshi_MainMenu.layout"

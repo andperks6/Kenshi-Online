@@ -68,6 +68,14 @@ python tools\audit_mod_assets.py
 `tools/fix_mod_gamestarts.py` is a narrow legacy repair for the accidental
 21-character start. It should not be extended into a general FCS editor.
 
+## Repository Layout
+
+Treat root `kenshi-online.mod` as the canonical development asset. The
+`dist/kenshi-online.mod` file is a release/package copy and should be refreshed
+from the root file when packaging. The root `install.bat` prefers the root mod
+for developer installs; `dist/install.bat` continues to work from a standalone
+release folder using the mod next to the script.
+
 ## Animation Dependency
 
 The mod cleanup is independent from first-pass animation sync. The first useful
