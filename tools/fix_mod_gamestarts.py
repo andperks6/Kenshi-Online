@@ -1,5 +1,5 @@
 """
-Fix kenshi-online.mod game starts.
+Legacy narrow repair for kenshi-online.mod game starts.
 
 The mod accidentally wires large player squads into starts:
 
@@ -9,6 +9,10 @@ The mod accidentally wires large player squads into starts:
   of 20, causing 20 Player 1 characters to spawn.
 
 Patch both issues while keeping the binary FCS structure size-stable.
+
+Do not extend this into a general .mod editor. Removing custom starts or
+restoring vanilla starts changes the FCS record graph and should be done in the
+Forgotten Construction Set, then verified with tools/audit_mod_assets.py.
 """
 
 import struct
