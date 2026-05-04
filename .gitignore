@@ -30,6 +30,10 @@ CMakeSettings.json
 *.obj
 *.o
 
+# Python cache
+__pycache__/
+*.py[cod]
+
 # OS files
 Thumbs.db
 desktop.ini
