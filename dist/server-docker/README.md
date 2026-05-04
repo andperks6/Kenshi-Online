@@ -18,6 +18,21 @@ Two compose recipes are provided:
 Pick one. They don't conflict — Unraid's host-level Tailscale and the
 sidecar can coexist (you'd just have two distinct tailnet nodes).
 
+**On Unraid?** Skip the compose recipes and use
+[`UNRAID.md`](UNRAID.md) + the `unraid-template.xml` in this directory
+for the proper Community Apps experience.
+
+## Config
+
+The container creates `data/server.json` with sensible defaults on
+first run, so you can `docker compose up -d` with no prep. To pre-edit
+instead, copy the example before the first start:
+
+```bash
+mkdir -p data && cp server.json.example data/server.json
+$EDITOR data/server.json
+```
+
 ## Basic (port-forwarded or LAN)
 
 ```bash

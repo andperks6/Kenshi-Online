@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>kenshi-online-server</Name>
+  <Repository>ghcr.io/andperks6/kenshi-online-server:latest</Repository>
+  <Registry>https://github.com/andperks6/Kenshi-Online/pkgs/container/kenshi-online-server</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/andperks6/Kenshi-Online/issues</Support>
+  <Project>https://github.com/andperks6/Kenshi-Online</Project>
+  <Overview>Kenshi-Online dedicated server. Up to 16 players, ENet over UDP. Persists world saves under /data. Runs as PUID/PGID for Unraid-friendly appdata ownership.</Overview>
+  <Category>GameServers:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/andperks6/Kenshi-Online/main/dist/server-docker/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs>/data/server.json</PostArgs>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Game port (UDP)" Target="27800" Default="27800" Mode="udp" Description="ENet game traffic. Forward this on your router if hosting on the public internet, or use a Tailscale sidecar." Type="Port" Display="always" Required="true" Mask="false">27800</Config>
+  <Config Name="Master server port (UDP, optional)" Target="27801" Default="27801" Mode="udp" Description="Server browser registry. Only needed if you self-host the master server (most people don't)." Type="Port" Display="advanced" Required="false" Mask="false">27801</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/kenshi-online-server" Mode="rw" Description="World saves and server.json. The container writes a default server.json here on first run." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/kenshi-online-server</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Description="UID the server runs as. Unraid default: 99 (nobody)." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="GID the server runs as. Unraid default: 100 (users)." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
+</Container>

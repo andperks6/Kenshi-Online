@@ -135,11 +135,13 @@ jobs:
           mkdir -p "$stage"
           cp build/bin/KenshiMP.Server "$stage/"
           cp build/bin/KenshiMP.MasterServer "$stage/"
-          cp dist/server.json "$stage/server.json.example"
-          cp dist/server-docker/README.md "$stage/README.md"
-          ls -la "$stage"
+          # Ship the docker recipes (compose, Unraid template, README) so
+          # someone with the tarball doesn't need to clone the repo to
+          # spin up a container.
+          cp -r dist/server-docker "$stage/server-docker"
+          ls -la "$stage" "$stage/server-docker"
 
-      - name: Tarball Linux payload
+      - name: Tarball Linux payload + standalone server-docker zip
         id: tar
         run: |
           set -eu
@@ -147,11 +149,21 @@ jobs:
           if [ -z "$tag" ] || [ "$tag" = "main" ]; then
             tag="dev-$(date -u +%Y%m%d-%H%M%S)"
           fi
+
           tar="Kenshi-Online-Server-${tag}-linux-x64.tar.gz"
           tar -C release -czf "$tar" "Kenshi-Online-Server-linux-x64"
+
+          # Smaller standalone docker-recipes zip for users who don't
+          # want the Linux binaries (e.g. Unraid users pulling the GHCR
+          # image and just needing the XML template + compose files).
+          docker_zip="Kenshi-Online-server-docker-${tag}.zip"
+          (cd dist && zip -r "../${docker_zip}" server-docker)
+
           echo "TAR_NAME=$tar"  >> "$GITHUB_ENV"
           echo "TAR_PATH=$tar"  >> "$GITHUB_ENV"
-          ls -la "$tar"
+          echo "DOCKER_ZIP_NAME=$docker_zip" >> "$GITHUB_ENV"
+          echo "DOCKER_ZIP_PATH=$docker_zip" >> "$GITHUB_ENV"
+          ls -la "$tar" "$docker_zip"
 
       - name: Upload Linux tarball artifact
         uses: actions/upload-artifact@v4
@@ -160,21 +172,28 @@ jobs:
           path: ${{ env.TAR_PATH }}
           if-no-files-found: error
 
-      - name: Attach Linux tarball to Release
+      - name: Upload server-docker zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DOCKER_ZIP_NAME }}
+          path: ${{ env.DOCKER_ZIP_PATH }}
+          if-no-files-found: error
+
+      - name: Attach Linux tarball + docker zip to Release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
-          files: ${{ env.TAR_PATH }}
+          files: |
+            ${{ env.TAR_PATH }}
+            ${{ env.DOCKER_ZIP_PATH }}
           fail_on_unmatched_files: true
 
   build-docker:
     name: Docker server image (GHCR)
     runs-on: ubuntu-latest
-    # Only push images for real tag releases, not dev workflow_dispatch
-    # runs without a tag_name. Local builds for testing should use
-    # `docker build` from the repo root.
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
+    # Always build to validate the Dockerfile. Push to GHCR only on real
+    # tag releases (or workflow_dispatch with an explicit tag_name).
 
     steps:
       - name: Checkout (with submodules)
@@ -185,7 +204,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Decide whether to push
+        id: push
+        run: |
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != '' }}" = "true" ]; then
+            echo "push=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to GHCR
+        if: steps.push.outputs.push == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -197,21 +226,30 @@ jobs:
         run: |
           set -eu
           tag="${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}"
+          # Fall back to a dev tag for build-only runs so docker doesn't
+          # complain about an empty tag value during validation builds.
+          if [ -z "$tag" ] || [ "$tag" = "main" ]; then
+            tag="dev-$(date -u +%Y%m%d-%H%M%S)"
+          fi
           repo_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${repo_lc}/kenshi-online-server"
-          {
-            echo "TAGS<<EOF"
-            echo "${image}:${tag}"
-            echo "${image}:latest"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
+          if [ "${{ steps.push.outputs.push }}" = "true" ]; then
+            {
+              echo "TAGS<<EOF"
+              echo "${image}:${tag}"
+              echo "${image}:latest"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+          else
+            echo "TAGS=${image}:${tag}" >> "$GITHUB_ENV"
+          fi
 
-      - name: Build & push image
+      - name: Build (and push if tagged)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          push: true
+          push: ${{ steps.push.outputs.push == 'true' }}
           tags: ${{ env.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

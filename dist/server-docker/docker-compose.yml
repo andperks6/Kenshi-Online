@@ -21,3 +21,9 @@ services:
       - ./data:/data
     # Server reads /data/server.json. If it doesn't exist, the server
     # writes a default file on first run — edit it and restart.
+    #
+    # Uncomment to align /data ownership with your host user (run `id`
+    # to find your UID/GID). Defaults to 10001:10001 inside the container.
+    # environment:
+    #   - PUID=1000
+    #   - PGID=1000

@@ -34,17 +34,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
         ca-certificates \
         tini \
+        gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin kenshi
 
 # Binaries land in /usr/local/bin. Saves and config under /data.
 COPY --from=builder /build/bin/KenshiMP.Server       /usr/local/bin/KenshiMP.Server
 COPY --from=builder /build/bin/KenshiMP.MasterServer /usr/local/bin/KenshiMP.MasterServer
-COPY dist/server.json /etc/kenshi-online/server.json.example
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-RUN mkdir -p /data && chown -R kenshi:kenshi /data
-
-USER kenshi
 WORKDIR /data
 VOLUME ["/data"]
 
@@ -52,11 +51,10 @@ VOLUME ["/data"]
 EXPOSE 27800/udp
 EXPOSE 27801/udp
 
-# tini handles SIGTERM cleanly so the server's atexit save runs
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/KenshiMP.Server"]
-
-# Default: read /data/server.json (mounted from host). If absent, the
-# server writes a default file on first run. Override the binary by
-# passing a different command, e.g.:
-#   docker run ... ghcr.io/.../kenshi-online-server /usr/local/bin/KenshiMP.MasterServer
+# Entrypoint runs as root, chown's /data to PUID:PGID (defaults to
+# kenshi/10001), then drops privileges via gosu and exec's tini + server.
+# Override PUID/PGID for Unraid (e.g. PUID=99 PGID=100 for nobody:users).
+# To run the master server instead:
+#   docker run ... <image> --entrypoint=/usr/bin/tini -- gosu kenshi /usr/local/bin/KenshiMP.MasterServer
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/data/server.json"]
