@@ -51,8 +51,24 @@ struct CharacterPosition {
     float    posX, posY, posZ;
     uint32_t compressedQuat; // Smallest-three encoded
     uint8_t  animStateId;
-    uint8_t  moveSpeed;      // 0-255 mapped to 0.0-15.0 m/s
-    uint16_t flags;          // Bit 0: running, Bit 1: sneaking, Bit 2: in combat
+    uint8_t  moveSpeed;      // 0-255 mapped to roughly 0.0-8.0 polled speed units
+    uint16_t flags;          // CharacterPositionFlags
+};
+
+enum CharacterPositionFlags : uint16_t {
+    CPF_MovingFast = 0x0001,
+    CPF_Sneaking   = 0x0002,
+    CPF_InCombat   = 0x0004,
+    CPF_Block      = 0x0008,
+    CPF_Hold       = 0x0010,
+    CPF_Passive    = 0x0020,
+    CPF_Jobs       = 0x0040,
+    CPF_Ranged     = 0x0080,
+    CPF_Taunt      = 0x0100,
+    CPF_RunSpeed0  = 0x0200,
+    CPF_RunSpeed1  = 0x0400,
+    CPF_RunSpeed2  = 0x0800,
+    CPF_RunSpeed16 = 0x1000,
 };
 
 struct MsgC2SPositionUpdate {

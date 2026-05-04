@@ -3,6 +3,8 @@
 #include "../game/game_types.h"
 #include "../game/asset_facilitator.h"
 #include "../hooks/entity_hooks.h"
+#include "../hooks/order_hooks.h"
+#include "movement_state.h"
 #include "../hooks/ai_hooks.h"
 #include "../hooks/squad_hooks.h"
 #include "kmp/protocol.h"
@@ -536,15 +538,9 @@ void SyncOrchestrator::StagePollAndSendPositions() {
 
         uint32_t compQuat = rotation.Compress();
 
-        // Prefer game-read animState; fall back to speed-derived heuristic
-        uint8_t animState = rd.animState;
-        if (animState == 0 && moveSpeed > 0.5f) {
-            animState = (moveSpeed > 5.0f) ? 2 : 1;
-        }
-
-        uint8_t moveSpeedU8 = static_cast<uint8_t>(
-            std::min(255.f, moveSpeed / 15.f * 255.f));
-        uint16_t flags = (moveSpeed > 3.0f) ? 0x01 : 0x00;
+        uint16_t flags = movement_state::BuildPositionFlags(moveSpeed, order_hooks::GetLocalOrderFlags());
+        uint8_t animState = movement_state::ClassifyAnimState(moveSpeed, flags);
+        uint8_t moveSpeedU8 = movement_state::EncodeMoveSpeed(moveSpeed);
 
         PacketWriter writer;
         writer.WriteHeader(MessageType::C2S_PositionUpdate);
@@ -905,9 +901,9 @@ void SyncOrchestrator::BackgroundReadEntities() {
         pp.cp.posY = pos.y;
         pp.cp.posZ = pos.z;
         pp.cp.compressedQuat = rot.Compress();
-        pp.cp.animStateId = animState;
-        pp.cp.moveSpeed = static_cast<uint8_t>(std::min(255.f, speed / 15.f * 255.f));
-        pp.cp.flags = (speed > 3.0f) ? 0x01 : 0x00;
+        pp.cp.flags = movement_state::BuildPositionFlags(speed, order_hooks::GetLocalOrderFlags());
+        pp.cp.animStateId = movement_state::ClassifyAnimState(speed, pp.cp.flags);
+        pp.cp.moveSpeed = movement_state::EncodeMoveSpeed(speed);
         pp.netId = netId;
         pp.pos = pos;
         pp.rot = rot;

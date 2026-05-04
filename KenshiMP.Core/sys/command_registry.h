@@ -43,4 +43,7 @@ private:
     std::unordered_map<std::string, CommandDef> m_commands;
 };
 
+// Per-tick support for built-in diagnostic commands.
+void ProcessCommandDiagnosticsTick(float deltaTime);
+
 } // namespace kmp

@@ -9,6 +9,7 @@
 #include "../hooks/entity_hooks.h"
 #include "../hooks/ai_hooks.h"
 #include "../hooks/char_tracker_hooks.h"
+#include "../hooks/order_hooks.h"
 #include "../game/shared_save_sync.h"
 #include "kmp/protocol.h"
 #include "kmp/messages.h"
@@ -19,8 +20,182 @@
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
+#include <mutex>
+#include <vector>
 
 namespace kmp {
+
+namespace {
+
+struct AnimTraceState {
+    std::mutex mutex;
+    bool active = false;
+    std::string filter;
+    float elapsed = 0.0f;
+    float duration = 0.0f;
+    float sampleAccum = 0.0f;
+    float interval = 0.25f;
+    int sampleIndex = 0;
+    bool hasPrevPos = false;
+    Vec3 prevPos{};
+};
+
+AnimTraceState g_animTrace;
+
+std::string LowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+bool IsLikelyPtr(uintptr_t v) {
+    return v >= 0x10000 && v < 0x00007FFFFFFFFFFFULL && (v & 0x7) == 0;
+}
+
+const char_tracker_hooks::TrackedChar* FindTrackedByFilter(
+    const std::vector<char_tracker_hooks::TrackedChar>& tracked,
+    const std::string& filter) {
+    std::string filterLower = LowerCopy(filter);
+    for (const auto& tc : tracked) {
+        if (LowerCopy(tc.name).find(filterLower) != std::string::npos) {
+            return &tc;
+        }
+    }
+    return nullptr;
+}
+
+bool ReadU32(uintptr_t base, size_t off, uint32_t& out) {
+    return Memory::Read(base + off, out);
+}
+
+bool ReadF32(uintptr_t base, size_t off, float& out) {
+    return Memory::Read(base + off, out) && std::isfinite(out);
+}
+
+void LogAnimTraceSampleLocked(AnimTraceState& st, float deltaTime) {
+    auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+    const auto* match = FindTrackedByFilter(tracked, st.filter);
+    if (!match) {
+        spdlog::warn("anim_trace sample={} no tracked character matched '{}'", st.sampleIndex, st.filter);
+        return;
+    }
+
+    uintptr_t anim = reinterpret_cast<uintptr_t>(match->animClassPtr);
+    uintptr_t chr = reinterpret_cast<uintptr_t>(match->characterPtr);
+    if (!IsLikelyPtr(anim) || !IsLikelyPtr(chr)) {
+        spdlog::warn("anim_trace sample={} '{}' invalid pointers char=0x{:X} anim=0x{:X}",
+                     st.sampleIndex, match->name, chr, anim);
+        return;
+    }
+
+    game::CharacterAccessor accessor(reinterpret_cast<void*>(chr));
+    Vec3 pos = accessor.GetPosition();
+    float speed = 0.0f;
+    if (st.hasPrevPos && deltaTime > 0.001f) {
+        float dx = pos.x - st.prevPos.x;
+        float dy = pos.y - st.prevPos.y;
+        float dz = pos.z - st.prevPos.z;
+        speed = std::sqrt(dx * dx + dy * dy + dz * dz) / deltaTime;
+    }
+    st.prevPos = pos;
+    st.hasPrevPos = true;
+
+    uint32_t v0c8 = 0;
+    uint32_t v334 = 0;
+    uint32_t v340 = 0;
+    uint32_t v344 = 0;
+    uint32_t v348 = 0;
+    uint32_t v34c = 0;
+    uint32_t v350 = 0;
+    uint32_t v530 = 0;
+    uint32_t v570 = 0;
+    uintptr_t controller = 0;
+    uintptr_t result = 0;
+    uint32_t ctrlActive = 0;
+    uint32_t resFlags = 0;
+    uint32_t resMode38 = 0;
+    uint32_t resMode40 = 0;
+    uint32_t resKind50 = 0;
+    float resF0 = 0.0f;
+    float resF8 = 0.0f;
+    float resFC = 0.0f;
+    float resF10 = 0.0f;
+    float resF14 = 0.0f;
+    float resF20 = 0.0f;
+    ReadU32(anim, 0x0C8, v0c8);
+    ReadU32(anim, 0x334, v334);
+    ReadU32(anim, 0x340, v340);
+    ReadU32(anim, 0x344, v344);
+    ReadU32(anim, 0x348, v348);
+    ReadU32(anim, 0x34C, v34c);
+    ReadU32(anim, 0x350, v350);
+    ReadU32(anim, 0x530, v530);
+    ReadU32(anim, 0x570, v570);
+
+    if (Memory::Read(anim + 0x328, controller) && IsLikelyPtr(controller)) {
+        uint8_t activeByte = 0;
+        if (Memory::Read(controller + 0x18, activeByte)) {
+            ctrlActive = activeByte;
+        }
+        if (Memory::Read(controller + 0x8, result) && IsLikelyPtr(result)) {
+            uint8_t b4 = 0, b5 = 0, b6 = 0, b7 = 0;
+            Memory::Read(result + 0x4, b4);
+            Memory::Read(result + 0x5, b5);
+            Memory::Read(result + 0x6, b6);
+            Memory::Read(result + 0x7, b7);
+            resFlags = static_cast<uint32_t>(b4) |
+                       (static_cast<uint32_t>(b5) << 8) |
+                       (static_cast<uint32_t>(b6) << 16) |
+                       (static_cast<uint32_t>(b7) << 24);
+            ReadU32(result, 0x38, resMode38);
+            ReadU32(result, 0x40, resMode40);
+            ReadU32(result, 0x50, resKind50);
+            ReadF32(result, 0x0, resF0);
+            ReadF32(result, 0x8, resF8);
+            ReadF32(result, 0x0C, resFC);
+            ReadF32(result, 0x10, resF10);
+            ReadF32(result, 0x14, resF14);
+            ReadF32(result, 0x20, resF20);
+        }
+    }
+
+    spdlog::info(
+        "anim_trace sample={} t={:.2f}/{:.2f} name='{}' char=0x{:X} anim=0x{:X} "
+        "pos=({:.2f},{:.2f},{:.2f}) speed={:.2f} "
+        "+0C8={} +334={} +340={} +344={} +348={} +34C={} +350={} +530={} +570={} "
+        "ctrl=0x{:X} ctrlActive={} result=0x{:X} resFlags=0x{:08X} resKind50={} "
+        "resMode38={} resMode40={} resF0={:.3f} resF8={:.3f} resFC={:.3f} resF10={:.3f} resF14={:.3f} resF20={:.3f}",
+        st.sampleIndex, st.elapsed, st.duration, match->name, chr, anim,
+        pos.x, pos.y, pos.z, speed,
+        v0c8, v334, v340, v344, v348, v34c, v350, v530, v570,
+        controller, ctrlActive, result, resFlags, resKind50,
+        resMode38, resMode40, resF0, resF8, resFC, resF10, resF14, resF20);
+}
+
+} // namespace
+
+void ProcessCommandDiagnosticsTick(float deltaTime) {
+    std::lock_guard lock(g_animTrace.mutex);
+    if (!g_animTrace.active) return;
+
+    g_animTrace.elapsed += deltaTime;
+    g_animTrace.sampleAccum += deltaTime;
+    if (g_animTrace.sampleAccum < g_animTrace.interval) {
+        return;
+    }
+
+    float sampleDelta = g_animTrace.sampleAccum;
+    g_animTrace.sampleAccum = 0.0f;
+    LogAnimTraceSampleLocked(g_animTrace, sampleDelta);
+    g_animTrace.sampleIndex++;
+
+    if (g_animTrace.elapsed >= g_animTrace.duration) {
+        spdlog::info("anim_trace complete filter='{}' samples={} duration={:.2f}",
+                     g_animTrace.filter, g_animTrace.sampleIndex, g_animTrace.elapsed);
+        g_animTrace.active = false;
+    }
+}
 
 void CommandRegistry::RegisterBuiltins() {
     // /help — List all registered commands
@@ -1100,7 +1275,442 @@ void CommandRegistry::RegisterBuiltins() {
         return r;
     });
 
+    // /anim_probe - Sample AnimationClassHuman memory for animation-state RE.
+    Register("anim_probe", "Sample tracked AnimationClass bytes (/anim_probe [sample_count] [name_filter])", [](const CommandArgs& args) -> std::string {
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        if (tracked.empty()) return "No tracked characters yet. Load a save and wait for tracked > 0.";
+
+        int sampleLimit = 8;
+        std::string nameFilter;
+        if (!args.args.empty()) {
+            size_t filterStart = 0;
+            try {
+                size_t consumed = 0;
+                int parsedLimit = std::stoi(args.args[0], &consumed);
+                if (consumed == args.args[0].size()) {
+                    sampleLimit = std::max(1, std::min(30, parsedLimit));
+                    filterStart = 1;
+                }
+            } catch (...) {
+                filterStart = 0;
+            }
+
+            for (size_t i = filterStart; i < args.args.size(); ++i) {
+                if (!nameFilter.empty()) nameFilter += " ";
+                nameFilter += args.args[i];
+            }
+        }
+
+        auto isPtr = [](uintptr_t v) {
+            return v >= 0x10000 && v < 0x00007FFFFFFFFFFFULL && (v & 0x7) == 0;
+        };
+        auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        std::string filterLower = lower(nameFilter);
+
+        std::string r = "--- Animation Probe ---";
+        r += "\nRun while idle, walking, running, and sneaking; compare KenshiOnline log lines tagged anim_probe.";
+        if (!nameFilter.empty()) r += "\nFilter: " + nameFilter;
+        r += "\nTracked: " + std::to_string(tracked.size());
+
+        char buf[512];
+        int shown = 0;
+        for (const auto& tc : tracked) {
+            if (shown >= sampleLimit) break;
+            if (!filterLower.empty() && lower(tc.name).find(filterLower) == std::string::npos) {
+                continue;
+            }
+            uintptr_t anim = reinterpret_cast<uintptr_t>(tc.animClassPtr);
+            uintptr_t chr = reinterpret_cast<uintptr_t>(tc.characterPtr);
+            if (!isPtr(anim) || !isPtr(chr)) continue;
+
+            uint8_t b370[0x20] = {};
+            bool okBytes = true;
+            for (int i = 0; i < 0x20; ++i) {
+                if (!Memory::Read(anim + 0x370 + i, b370[i])) {
+                    okBytes = false;
+                    break;
+                }
+            }
+
+            uintptr_t movement = 0;
+            bool okMovement = Memory::Read(anim + game::GetOffsets().character.charMovementOffset, movement) && isPtr(movement);
+            uint8_t state37c = okBytes ? b370[0x0C] : 0;
+            uint8_t state37d = okBytes ? b370[0x0D] : 0;
+            uint8_t state37e = okBytes ? b370[0x0E] : 0;
+            uint8_t state37f = okBytes ? b370[0x0F] : 0;
+
+            std::string nm = tc.name;
+            if (nm.size() > 18) nm = nm.substr(0, 15) + "...";
+
+            char hex370[3 * 0x20 + 1] = {};
+            int pos = 0;
+            if (okBytes) {
+                for (int i = 0; i < 0x20; ++i) {
+                    pos += snprintf(hex370 + pos, sizeof(hex370) - pos, "%02X%s", b370[i], (i == 0x1F) ? "" : " ");
+                }
+            } else {
+                snprintf(hex370, sizeof(hex370), "<read failed>");
+            }
+
+            snprintf(buf, sizeof(buf),
+                     "anim_probe [%02d] '%s' char=0x%llX anim=0x%llX movement=%s0x%llX +37C=%u +37D=%u +37E=%u +37F=%u bytes370=%s",
+                     shown,
+                     nm.empty() ? "(noname)" : nm.c_str(),
+                     static_cast<unsigned long long>(chr),
+                     static_cast<unsigned long long>(anim),
+                     okMovement ? "" : "!",
+                     static_cast<unsigned long long>(movement),
+                     state37c, state37d, state37e, state37f,
+                     hex370);
+            spdlog::info("{}", buf);
+
+            r += "\n";
+            r += buf;
+            shown++;
+        }
+
+        if (shown == 0) {
+            if (!nameFilter.empty()) return "No tracked characters matched '" + nameFilter + "' with valid AnimationClass pointers.";
+            return "No tracked characters had valid AnimationClass pointers.";
+        }
+        r += "\nProbe lines were written to the KenshiOnline log.";
+        return r;
+    });
+
+    // /anim_watch <name_filter> [range_hex] - Diff AnimationClass bytes between calls.
+    Register("anim_watch", "Diff AnimationClass bytes across calls (/anim_watch <name> [range_hex])", [](const CommandArgs& args) -> std::string {
+        if (args.args.empty()) return "Usage: /anim_watch <name_filter> [range_hex=0x800]";
+
+        std::string nameFilter = args.args[0];
+        size_t range = 0x800;
+        if (args.args.size() >= 2) {
+            try {
+                range = static_cast<size_t>(std::stoul(args.args[1], nullptr, 16));
+                range = std::max<size_t>(0x100, std::min<size_t>(0x2000, range));
+            } catch (...) {
+                return "Usage: /anim_watch <name_filter> [range_hex=0x800]";
+            }
+        }
+
+        auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        auto isPtr = [](uintptr_t v) {
+            return v >= 0x10000 && v < 0x00007FFFFFFFFFFFULL && (v & 0x7) == 0;
+        };
+
+        std::string filterLower = lower(nameFilter);
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        const char_tracker_hooks::TrackedChar* match = nullptr;
+        for (const auto& tc : tracked) {
+            if (lower(tc.name).find(filterLower) != std::string::npos) {
+                match = &tc;
+                break;
+            }
+        }
+        if (!match) return "No tracked character matched '" + nameFilter + "'.";
+
+        uintptr_t anim = reinterpret_cast<uintptr_t>(match->animClassPtr);
+        uintptr_t chr = reinterpret_cast<uintptr_t>(match->characterPtr);
+        if (!isPtr(anim) || !isPtr(chr)) return "Matched character has invalid AnimationClass pointer.";
+
+        std::vector<uint8_t> current(range);
+        for (size_t i = 0; i < range; ++i) {
+            if (!Memory::Read(anim + i, current[i])) {
+                return "Failed reading AnimationClass at offset 0x" + std::to_string(i) + ".";
+            }
+        }
+
+        static uintptr_t s_watchAnim = 0;
+        static std::string s_watchName;
+        static std::vector<uint8_t> s_watchBytes;
+        static int s_watchSeq = 0;
+
+        char buf[512];
+        std::string r = "--- Animation Watch ---";
+        snprintf(buf, sizeof(buf), "\nname='%s' char=0x%llX anim=0x%llX range=0x%zX",
+                 match->name.c_str(),
+                 static_cast<unsigned long long>(chr),
+                 static_cast<unsigned long long>(anim),
+                 range);
+        r += buf;
+
+        if (s_watchAnim != anim || s_watchBytes.size() != current.size()) {
+            s_watchAnim = anim;
+            s_watchName = match->name;
+            s_watchBytes = current;
+            s_watchSeq = 0;
+            snprintf(buf, sizeof(buf), "anim_watch baseline name='%s' char=0x%llX anim=0x%llX range=0x%zX",
+                     match->name.c_str(),
+                     static_cast<unsigned long long>(chr),
+                     static_cast<unsigned long long>(anim),
+                     range);
+            spdlog::info("{}", buf);
+            r += "\nBaseline captured. Run again after changing movement state.";
+            return r;
+        }
+
+        struct Change {
+            size_t off;
+            uint8_t oldVal;
+            uint8_t newVal;
+        };
+        std::vector<Change> changes;
+        changes.reserve(128);
+        for (size_t i = 0; i < current.size(); ++i) {
+            if (current[i] != s_watchBytes[i]) {
+                changes.push_back({i, s_watchBytes[i], current[i]});
+            }
+        }
+
+        s_watchSeq++;
+        snprintf(buf, sizeof(buf),
+                 "anim_watch #%d name='%s' char=0x%llX anim=0x%llX changed=%zu range=0x%zX",
+                 s_watchSeq,
+                 match->name.c_str(),
+                 static_cast<unsigned long long>(chr),
+                 static_cast<unsigned long long>(anim),
+                 changes.size(),
+                 range);
+        spdlog::info("{}", buf);
+        r += "\n";
+        r += buf;
+
+        size_t maxChanges = std::min<size_t>(changes.size(), 80);
+        for (size_t i = 0; i < maxChanges; ++i) {
+            const auto& c = changes[i];
+            float f = 0.f;
+            bool hasFloat = (c.off + sizeof(float) <= current.size()) &&
+                            Memory::Read(anim + c.off, f) &&
+                            std::isfinite(f) && std::fabs(f) < 1000000.f;
+            if (hasFloat) {
+                snprintf(buf, sizeof(buf), " +0x%04zX:%02X->%02X f=%.3f",
+                         c.off, c.oldVal, c.newVal, f);
+            } else {
+                snprintf(buf, sizeof(buf), " +0x%04zX:%02X->%02X",
+                         c.off, c.oldVal, c.newVal);
+            }
+            spdlog::info("anim_watch{}", buf);
+            r += "\n";
+            r += buf;
+        }
+        if (changes.size() > maxChanges) {
+            snprintf(buf, sizeof(buf), "\n... %zu more byte changes omitted", changes.size() - maxChanges);
+            r += buf;
+        }
+
+        s_watchBytes = std::move(current);
+        return r;
+    });
+
     // /scan <charptr> [start] [end] — Scan character memory for pointers/values
+    // /anim_trace <name_filter> [seconds] [interval_ms] - Timed animation-state sampler.
+    Register("anim_trace", "Trace animation fields over time (/anim_trace <name|stop> [seconds] [interval_ms])", [](const CommandArgs& args) -> std::string {
+        if (args.args.empty()) return "Usage: /anim_trace <name_filter|stop> [seconds=12] [interval_ms=250]";
+
+        if (LowerCopy(args.args[0]) == "stop") {
+            std::lock_guard lock(g_animTrace.mutex);
+            bool wasActive = g_animTrace.active;
+            g_animTrace.active = false;
+            spdlog::info("anim_trace stopped by command filter='{}' samples={}",
+                         g_animTrace.filter, g_animTrace.sampleIndex);
+            return wasActive ? "Animation trace stopped." : "Animation trace was not active.";
+        }
+
+        float seconds = 12.0f;
+        int intervalMs = 250;
+        size_t nameArgCount = args.args.size();
+
+        if (nameArgCount >= 2) {
+            try {
+                size_t consumed = 0;
+                seconds = std::stof(args.args.back(), &consumed);
+                if (consumed == args.args.back().size()) {
+                    nameArgCount--;
+                }
+            } catch (...) {
+            }
+        }
+        if (nameArgCount >= 2 && args.args.size() - nameArgCount == 1) {
+            try {
+                size_t consumed = 0;
+                intervalMs = std::stoi(args.args.back(), &consumed);
+                if (consumed == args.args.back().size()) {
+                    nameArgCount--;
+                    seconds = std::stof(args.args[nameArgCount], nullptr);
+                }
+            } catch (...) {
+                seconds = 12.0f;
+                intervalMs = 250;
+                nameArgCount = args.args.size();
+            }
+        }
+
+        std::string filter;
+        for (size_t i = 0; i < nameArgCount; ++i) {
+            if (!filter.empty()) filter += " ";
+            filter += args.args[i];
+        }
+        if (filter.empty()) return "Usage: /anim_trace <name_filter|stop> [seconds=12] [interval_ms=250]";
+
+        seconds = std::max(1.0f, std::min(60.0f, seconds));
+        intervalMs = std::max(50, std::min(2000, intervalMs));
+
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        const auto* match = FindTrackedByFilter(tracked, filter);
+        if (!match) return "No tracked character matched '" + filter + "'.";
+        uintptr_t anim = reinterpret_cast<uintptr_t>(match->animClassPtr);
+        uintptr_t chr = reinterpret_cast<uintptr_t>(match->characterPtr);
+        if (!IsLikelyPtr(anim) || !IsLikelyPtr(chr)) return "Matched character has invalid AnimationClass pointer.";
+
+        {
+            std::lock_guard lock(g_animTrace.mutex);
+            g_animTrace.active = true;
+            g_animTrace.filter = filter;
+            g_animTrace.elapsed = 0.0f;
+            g_animTrace.duration = seconds;
+            g_animTrace.interval = static_cast<float>(intervalMs) / 1000.0f;
+            g_animTrace.sampleAccum = g_animTrace.interval;
+            g_animTrace.sampleIndex = 0;
+            g_animTrace.hasPrevPos = false;
+        }
+
+        spdlog::info("anim_trace start filter='{}' matched='{}' char=0x{:X} anim=0x{:X} duration={:.2f}s interval={}ms",
+                     filter, match->name, chr, anim, seconds, intervalMs);
+
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Animation trace started for '%s' for %.1fs at %dms. Move normally; samples write to the log.",
+                 match->name.c_str(), seconds, intervalMs);
+        return buf;
+    });
+
+    // /order_trace <on|off|status> - Log selected-character order dispatches.
+    Register("order_trace", "Trace selected-character orders (/order_trace on|off|status)", [](const CommandArgs& args) -> std::string {
+        if (args.args.empty() || LowerCopy(args.args[0]) == "status") {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Order trace is %s. Local order flags: 0x%04X. Run order: %u.",
+                     order_hooks::IsTraceEnabled() ? "on" : "off",
+                     order_hooks::GetLocalOrderFlags(),
+                     order_hooks::GetLastRunSpeedOrder());
+            return buf;
+        }
+
+        std::string mode = LowerCopy(args.args[0]);
+        if (mode == "on" || mode == "start" || mode == "1") {
+            order_hooks::SetTraceEnabled(true);
+            return "Order trace enabled. Toggle sneak/block/passive/hold/ranged/taunt/run speed; events write to the log.";
+        }
+        if (mode == "off" || mode == "stop" || mode == "0") {
+            order_hooks::SetTraceEnabled(false);
+            return "Order trace disabled.";
+        }
+
+        return "Usage: /order_trace on|off|status";
+    });
+
+    // /scan <charptr> [start] [end] — Scan character memory for pointers/values
+    // /anim_state <name_filter> - Read high-signal AnimationClass candidate fields.
+    Register("anim_state", "Read animation-state candidate fields (/anim_state <name>)", [](const CommandArgs& args) -> std::string {
+        if (args.args.empty()) return "Usage: /anim_state <name_filter>";
+
+        std::string nameFilter = args.args[0];
+        for (size_t i = 1; i < args.args.size(); ++i) {
+            nameFilter += " ";
+            nameFilter += args.args[i];
+        }
+
+        auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        auto isPtr = [](uintptr_t v) {
+            return v >= 0x10000 && v < 0x00007FFFFFFFFFFFULL && (v & 0x7) == 0;
+        };
+
+        std::string filterLower = lower(nameFilter);
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        const char_tracker_hooks::TrackedChar* match = nullptr;
+        for (const auto& tc : tracked) {
+            if (lower(tc.name).find(filterLower) != std::string::npos) {
+                match = &tc;
+                break;
+            }
+        }
+        if (!match) return "No tracked character matched '" + nameFilter + "'.";
+
+        uintptr_t anim = reinterpret_cast<uintptr_t>(match->animClassPtr);
+        uintptr_t chr = reinterpret_cast<uintptr_t>(match->characterPtr);
+        if (!isPtr(anim) || !isPtr(chr)) return "Matched character has invalid AnimationClass pointer.";
+
+        game::CharacterAccessor accessor(reinterpret_cast<void*>(chr));
+        Vec3 pos = accessor.GetPosition();
+
+        struct Candidate {
+            size_t off;
+            const char* label;
+        };
+        static constexpr Candidate candidates[] = {
+            {0x0C8, "anim_time"},
+            {0x334, "current_kind"},
+            {0x340, "active_data0"},
+            {0x344, "active_data1"},
+            {0x348, "active_data2"},
+            {0x34C, "active_data3"},
+            {0x350, "active_data4"},
+            {0x020, "watch_partial"},
+            {0x530, "anim_state_a"},
+            {0x570, "anim_state_b"},
+        };
+
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "anim_state name='%s' char=0x%llX anim=0x%llX pos=(%.2f, %.2f, %.2f)",
+                 match->name.c_str(),
+                 static_cast<unsigned long long>(chr),
+                 static_cast<unsigned long long>(anim),
+                 pos.x, pos.y, pos.z);
+        spdlog::info("{}", buf);
+
+        std::string r = "--- Animation State ---";
+        r += "\n";
+        r += buf;
+
+        for (const auto& c : candidates) {
+            uint8_t u8 = 0;
+            uint16_t u16 = 0;
+            uint32_t u32 = 0;
+            bool ok8 = Memory::Read(anim + c.off, u8);
+            bool ok16 = Memory::Read(anim + c.off, u16);
+            bool ok32 = Memory::Read(anim + c.off, u32);
+            if (!ok8 || !ok16 || !ok32) {
+                snprintf(buf, sizeof(buf), "anim_state +0x%03zX %-14s READ_FAIL", c.off, c.label);
+            } else {
+                snprintf(buf, sizeof(buf),
+                         "anim_state +0x%03zX %-14s u8=%u u16=%u u32=%u hex=%02X %02X %02X %02X",
+                         c.off, c.label,
+                         static_cast<unsigned>(u8),
+                         static_cast<unsigned>(u16),
+                         static_cast<unsigned>(u32),
+                         static_cast<unsigned>(u32 & 0xFF),
+                         static_cast<unsigned>((u32 >> 8) & 0xFF),
+                         static_cast<unsigned>((u32 >> 16) & 0xFF),
+                         static_cast<unsigned>((u32 >> 24) & 0xFF));
+            }
+            spdlog::info("{}", buf);
+            r += "\n";
+            r += buf;
+        }
+
+        return r;
+    });
+
     Register("scan", "Scan char struct for pointers (/scan <addr> [start] [end])", [](const CommandArgs& args) -> std::string {
         if (args.args.empty()) return "Usage: /scan <hex_addr> [start_offset=0] [end_offset=0x200]";
 

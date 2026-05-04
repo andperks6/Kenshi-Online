@@ -21,6 +21,8 @@ add_library(KenshiMP.Core SHARED
     hooks/squad_spawn_hooks.cpp
     hooks/char_tracker_hooks.h
     hooks/char_tracker_hooks.cpp
+    hooks/order_hooks.h
+    hooks/order_hooks.cpp
     # Game wrappers
     game/game_character.cpp
     game/game_squad.cpp

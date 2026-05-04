@@ -366,3 +366,184 @@ Next code cleanup target:
 - Offset-cache restore no longer overwrites verified defaults for
   `aiPackage`, `animClassOffset`, or `squad`; it only fills those fields if
   they are unknown.
+
+### Animation-state probing (2026-05-03)
+
+Manual `/anim_state zz` capture was run against a controlled test character
+in the sequence idle, walk, jog, run, sprint, sneak, idle. The command logged
+`AnimationClassHuman` candidate fields plus position in
+`KenshiOnline_25364.log`.
+
+Observed values:
+
+| Step | Intended motion | `anim+0x530` | `anim+0x570` |
+|---:|---|---:|---:|
+| 1 | idle | 3 | 3 |
+| 2 | walk | 22 | 22 |
+| 3 | jog | 22 | 22 |
+| 4 | run | 6 | 6 |
+| 5 | sprint | 13 | 13 |
+| 6 | sneak | 2 | 2 |
+| 7 | return idle | 10 | 10 |
+
+Conclusion: `anim+0x530` and `anim+0x570` are high-signal mirrored fields,
+but they are not yet safe to promote as `animState`. The return-to-idle value
+did not match the initial idle value, so these are likely action/clip codes or
+animation-layer state rather than a stable high-level movement mode. Do not
+repeat the same manual state sequence; the next step should be automated
+sampling with velocity/stance context so state transitions can be correlated
+without hand-entering commands.
+
+Follow-up `/anim_trace zz 12 250` captures added position-derived speed plus
+the `AnimationClassHuman +0x328 -> +0x8` controller result buffer from
+`FUN_14065f160`. Two 49-sample traces were captured in `KenshiOnline_26356.log`:
+one stationary, one moving through walk/run/sprint/sneak. The source buffer did
+not expose a usable locomotion enum in this path:
+
+| Field | Observation |
+|---|---|
+| `anim+0x334` | Constant `2` |
+| `anim+0x340` | Constant `11` |
+| `anim+0x344..0x350` | Constant zero |
+| `anim+0x530/+0x570` | Continues cycling independently of speed |
+| `ctrl+0x18` | Constant active `1` |
+| `result+0x4..0x7` | Constant flags `0x01010000` |
+| `result+0x38` | Constant `11` |
+| `result+0x40` | Constant `0` |
+| `result+0x50` | Constant `2` |
+
+Position-derived speed cleanly separated the tested movement bands
+(idle `0`, walk about `15`, run about `55`, sprint about `70`, sneak about
+`23`). First animation-sync milestone should therefore derive and transmit a
+compact locomotion state from velocity plus stance/control context, instead of
+blocking on a single discovered animation-state offset. Keep the Ghidra notes
+for later attack/block/parry work, where combat animation events may need
+separate hooks.
+
+### Ghidra follow-up: stance/order actions (2026-05-03)
+
+The lack of a useful locomotion enum in `AnimationClassHuman` does not mean the
+game has no stance state. Ghidra points to a different path for toggles such as
+sneak/block/passive/taunt/ranged:
+
+- `FUN_1403636c0` registers input actions. Relevant action names and IDs:
+  - `toggle_block` -> `0x17`
+  - `toggle_hold` -> `0x18`
+  - `toggle_passive` -> `0x19`
+  - `toggle_jobs` -> `0x1A`
+  - `toggle_ranged` -> `0x1B`
+  - `toggle_sneak` -> `0x1C`
+  - `toggle_taunt` -> `0x1D`
+  - `cycle_run_speed` -> `0x1E`
+- `FUN_14072b540` constructs the orders panel and wires buttons such as
+  `OrdersBlockButton`, `OrdersHoldButton`, `OrdersPassiveButton`,
+  `OrdersTauntButton`, `OrdersRangedButton`, and `OrdersSneakButton`.
+- `FUN_140721410` is the `OrdersSneakButton` handler. It toggles the MyGUI
+  selected state, plays `Stealth` when enabling, and dispatches:
+  - `thunk_FUN_1407f3880(DAT_142134690, 3)` when enabling sneak
+  - `thunk_FUN_1407f3880(DAT_142134690, 4)` when disabling sneak
+- `FUN_1407f3880` is a central selected-character order dispatcher. It iterates
+  selected characters and calls virtual method `+0x308` on each character with
+  `(orderId, bool)`.
+- Other order-panel delegates call the same dispatcher with IDs including
+  `0x0C`, `0x0D`, `0x0E`, `0x0F`, and `0x11` for combat/order toggles.
+
+Implication: the first practical sync path should not be a raw animation offset.
+It should be split:
+
+1. Locomotion presentation: derive idle/walk/run/sprint bands from position
+   delta and transmit them in `CharacterPosition.animStateId/moveSpeed/flags`.
+2. Sneak/combat stance: trace or hook the order dispatcher path so toggles can
+   set explicit network flags. Sneak should be a real bit, not inferred from
+   speed, because sneak speed overlaps slow movement.
+3. Remote application: use the same order-dispatch path or the per-character
+   virtual `+0x308` target to apply stance changes to remote characters if
+   calling it proves stable. Avoid writing arbitrary guessed character flags
+   until a real offset is verified.
+
+Implementation note: `order_hooks` now hooks the selected-character order
+dispatcher at `game+0x7F3880` and defers logging to `OnGameTick`. Runtime
+validation on 2026-05-03 confirmed the hook installs cleanly and logs while the
+game is still running. Ghidra button-handler cross-check plus the second-pass
+click order mapped the selected-character order IDs:
+
+- `0x0B` = block.
+- `0x0C` = hold.
+- `0x0D` = passive.
+- `0x0F` = jobs.
+- `0x11` = ranged.
+- `0x0E` = taunt.
+- `3` = sneak on.
+- `4` = sneak off.
+- `0`, `1`, `2`, `0x10` = run-speed cycle states observed while moving.
+
+Code integration:
+
+- `movement_state.h` centralizes first-milestone locomotion classification:
+  idle `<0.5`, walk/slow `<3.5`, run `<6.5`, sprint `>=6.5`, with sneak
+  overriding to anim state `4`.
+- `moveSpeed` packet encoding now maps `0..8` observed polled speed units to
+  `0..255`. A Freedom 5 weighted-party test on 2026-05-03 showed slow movement
+  around `2.5..3.0` and faster movement around `5.0..6.8`; the earlier
+  `/anim_trace` position-derived scale was not the same as
+  `Core::PollLocalPositions`.
+- `order_hooks` tracks local selected-character toggles and feeds
+  `CharacterPosition.flags`: sneak, block, hold, passive, jobs, ranged, taunt.
+  Run-speed cycle orders are also preserved as explicit intent flags
+  (`CPF_RunSpeed0`, `CPF_RunSpeed1`, `CPF_RunSpeed2`, `CPF_RunSpeed16`) and are
+  logged as `runOrder`. These should drive sprint/run presentation once the UI
+  order-to-label mapping is validated, because backpack weight can make speed
+  alone ambiguous.
+  This is intentionally local aggregate state for the first milestone; a later
+  per-character vfunc hook is needed if multiple selected characters can diverge.
+- Same-party test start (`zz1`..`zz6`) confirmed `char_tracker_hooks` sees local
+  party members immediately, while `CharacterIterator` still finds zero squad
+  characters and leaves the entity registry empty. `SendExistingEntitiesToServer`
+  now has a narrow `char_tracker` fallback for `zz<number>` and `Player <number>`
+  names so test/local-template characters can register and exercise movement
+  packets. This is not the final faction/ownership solution.
+
+Probe recipe for the next run:
+
+1. Start/load normally, host from F1, wait until `tracked > 0`.
+2. Run `/order_trace on`.
+3. Select the local test character and toggle Sneak on/off, Block on/off,
+   Passive on/off, Hold on/off, Ranged on/off, Taunt on/off, and cycle run
+   speed once or twice.
+4. Run `/order_trace off` or quit.
+5. Inspect the latest `KenshiOnline_*.log` for `order_hooks:` install status and
+   `order_trace:` lines. The current log file can usually be read while Kenshi
+   is still running; quitting only matters if the file sink has not flushed the
+   newest lines yet.
+
+### Trading and inventory reality check (2026-05-03)
+
+Current docs overstate trade/inventory completeness. The live code has protocol
+types and partial handlers, but not a real player-to-player trade workflow.
+
+Observed implementation:
+
+- `inventory_hooks.cpp` hooks `ItemPickup`, `ItemDrop`, and `BuyItem`.
+- `BuyItem` sends `C2S_TradeRequest` with buyer, seller, item template, quantity,
+  and `price = 0`.
+- Server `HandleTradeRequest` only validates buyer ownership, quantity, price
+  range, and optional seller existence, then broadcasts `S2C_TradeResult`.
+- Client `HandleTradeResult` only displays success/denied text.
+- `ItemTransfer` exists as a message and server handler, but it only broadcasts
+  inventory add/remove updates. There is no consent/offer/accept/cancel state,
+  no escrow, no money validation, no duplicate prevention, and no confirmed
+  local inventory mutation path for true player-to-player trades.
+
+Implication: player trading is effectively unimplemented. Treat current
+inventory/trade code as experimental item-event broadcast scaffolding, not a
+safe multiplayer trading feature.
+
+Combat reality check:
+
+- `ApplyDamage` is intentionally not hooked because the mov-rax-rsp wrapper was
+  crash-prone under frequent calls.
+- Current combat sync relies on death/KO hooks plus limb-health snapshots and
+  simplified server combat code for `C2S_AttackIntent`.
+- Block/parry/attack animation fidelity is not established. Later work should
+  trace task/vtable paths such as `AttackState`/`Task_MeleeAttack`, but it
+  should stay separate from the first locomotion/stance milestone.

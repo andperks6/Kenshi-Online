@@ -17,11 +17,13 @@
 #include "hooks/resource_hooks.h"
 #include "hooks/squad_spawn_hooks.h"
 #include "hooks/char_tracker_hooks.h"
+#include "hooks/order_hooks.h"
 #include "game/game_types.h"
 #include "game/game_offset_prober.h"
 #include "game/asset_facilitator.h"
 #include "game/shared_save_sync.h"
 #include "game/game_inventory.h"
+#include "sync/movement_state.h"
 #include "kmp/protocol.h"
 #include "kmp/messages.h"
 #include "kmp/constants.h"
@@ -31,6 +33,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <unordered_map>
 #include <csignal>
@@ -1115,6 +1118,18 @@ bool Core::InitHooks() {
         }
     }
 
+    // Selected-character order dispatcher (diagnostic path for stance/sneak/run-speed commands)
+    if (HookDisabled("order")) {
+        m_nativeHud.LogStep("SKIP", "Order hooks disabled via KMP_DISABLE_HOOKS");
+    } else {
+        m_nativeHud.LogStep("HOOK", "Order dispatcher...");
+        if (order_hooks::Install()) {
+            m_nativeHud.LogStep("OK", "Order dispatcher installed");
+        } else {
+            m_nativeHud.LogStep("WARN", "Order dispatcher hook not available");
+        }
+    }
+
     // Inventory hooks (ItemPickup, ItemDrop, BuyItem)
     if (HookDisabled("inventory")) {
         m_nativeHud.LogStep("SKIP", "Inventory hooks disabled via KMP_DISABLE_HOOKS");
@@ -1999,6 +2014,85 @@ void Core::SendExistingEntitiesToServer() {
         }
     }
 
+    // Steam builds currently have a reliable AnimationClass -> Character path
+    // but an unreliable CharacterIterator. For test starts with explicitly
+    // named local characters (zz1, zz2, ...), register from char_tracker so the
+    // rest of the sync pipeline can run.
+    if (count == 0) {
+        auto tracked = char_tracker_hooks::GetTrackedSnapshot();
+        int trackedRegistered = 0;
+
+        for (const auto& tc : tracked) {
+            if (!tc.characterPtr || tc.name.empty()) continue;
+
+            bool likelyLocalTestCharacter = false;
+            if (tc.name.size() >= 3 &&
+                (tc.name[0] == 'z' || tc.name[0] == 'Z') &&
+                (tc.name[1] == 'z' || tc.name[1] == 'Z') &&
+                std::isdigit(static_cast<unsigned char>(tc.name[2]))) {
+                likelyLocalTestCharacter = true;
+            } else if (tc.name.rfind("Player ", 0) == 0) {
+                likelyLocalTestCharacter = true;
+            }
+            if (!likelyLocalTestCharacter) continue;
+
+            void* gameObj = tc.characterPtr;
+            if (m_entityRegistry.GetNetId(gameObj) != INVALID_ENTITY) continue;
+
+            game::CharacterAccessor character(gameObj);
+            if (!character.IsValid()) continue;
+
+            Vec3 pos = character.GetPosition();
+            if (pos.x == 0.f && pos.y == 0.f && pos.z == 0.f) {
+                pos = tc.position;
+            }
+            if (pos.x == 0.f && pos.y == 0.f && pos.z == 0.f) continue;
+
+            Quat rot = character.GetRotation();
+            EntityID netId = m_entityRegistry.Register(gameObj, EntityType::PlayerCharacter, m_localPlayerId);
+            m_entityRegistry.UpdatePosition(netId, pos);
+            m_entityRegistry.UpdateRotation(netId, rot);
+
+            uintptr_t factionPtr = character.GetFactionPtr();
+            uint32_t factionId = 0;
+            const int fIdOff = game::GetOffsets().faction.id;
+            if (factionPtr != 0 && fIdOff >= 0) {
+                Memory::Read(factionPtr + fIdOff, factionId);
+            }
+
+            PacketWriter writer;
+            writer.WriteHeader(MessageType::C2S_EntitySpawnReq);
+            writer.WriteU32(netId);
+            writer.WriteU8(static_cast<uint8_t>(EntityType::PlayerCharacter));
+            writer.WriteU32(m_localPlayerId);
+            writer.WriteU32(0);
+            writer.WriteF32(pos.x);
+            writer.WriteF32(pos.y);
+            writer.WriteF32(pos.z);
+            writer.WriteU32(rot.Compress());
+            writer.WriteU32(factionId);
+            writer.WriteString(tc.name);
+
+            writer.WriteU8(1);
+            for (int bp = 0; bp < 7; bp++) {
+                writer.WriteF32(character.GetHealth(static_cast<BodyPart>(bp)));
+            }
+            writer.WriteU8(character.IsAlive() ? 1 : 0);
+
+            m_client.SendReliable(writer.Data(), writer.Size());
+            count++;
+            trackedRegistered++;
+
+            spdlog::info("Core: Registered tracked local test character '{}' as entity {} pos=({:.1f},{:.1f},{:.1f})",
+                         tc.name, netId, pos.x, pos.y, pos.z);
+        }
+
+        if (trackedRegistered > 0) {
+            spdlog::info("Core: char_tracker fallback registered {} local test characters", trackedRegistered);
+            m_initialEntityScanDone = true;
+        }
+    }
+
     // Discover isPlayerControlled offset by comparing a player char vs NPC char
     if (firstPlayerCharPtr != 0 && firstNpcCharPtr != 0) {
         game::ProbePlayerControlledOffset(firstPlayerCharPtr, firstNpcCharPtr);
@@ -2422,6 +2516,9 @@ void Core::OnGameTick(float deltaTime) {
         // Process deferred character discoveries (new chars found by animation hook)
         char_tracker_hooks::ProcessDeferredDiscovery();
 
+        // Process selected-character order diagnostics.
+        order_hooks::ProcessDeferredEvents();
+
         // Process deferred zone events (load/unload queued from hook context)
         world_hooks::ProcessDeferredZoneEvents();
 
@@ -2433,6 +2530,9 @@ void Core::OnGameTick(float deltaTime) {
 
         // Shared-save sync: discover characters by name, sync positions
         shared_save_sync::Update(deltaTime);
+
+        // Diagnostic slash commands that need per-tick sampling.
+        ProcessCommandDiagnosticsTick(deltaTime);
 
         g_lastTickStep = 6; g_lastStepName = "host_teleport";
         WriteBreadcrumb("host_teleport", s_tickCallCount, 6);
@@ -2504,6 +2604,9 @@ void Core::OnGameTick(float deltaTime) {
         // Process deferred character discoveries (new chars found by animation hook)
         char_tracker_hooks::ProcessDeferredDiscovery();
 
+        // Process selected-character order diagnostics.
+        order_hooks::ProcessDeferredEvents();
+
         // Process deferred zone events (load/unload queued from hook context)
         world_hooks::ProcessDeferredZoneEvents();
 
@@ -2515,6 +2618,9 @@ void Core::OnGameTick(float deltaTime) {
 
         // Shared-save sync: discover characters by name, sync positions
         shared_save_sync::Update(deltaTime);
+
+        // Diagnostic slash commands that need per-tick sampling.
+        ProcessCommandDiagnosticsTick(deltaTime);
         SetLastCompletedStep(7);
 
         g_lastTickStep = 10; g_lastStepName = "host_teleport";
@@ -3024,16 +3130,9 @@ void Core::PollLocalPositions() {
 
         uint32_t compQuat = rotation.Compress();
 
-        // Derive animation state from speed
-        uint8_t animState = 0;
-        if (moveSpeed > 5.0f) animState = 2; // running
-        else if (moveSpeed > 0.5f) animState = 1; // walking
-
-        uint8_t moveSpeedU8 = static_cast<uint8_t>(
-            std::min(255.f, moveSpeed / 15.f * 255.f));
-
-        uint16_t flags = 0;
-        if (moveSpeed > 3.0f) flags |= 0x01; // running
+        uint16_t flags = movement_state::BuildPositionFlags(moveSpeed, order_hooks::GetLocalOrderFlags());
+        uint8_t animState = movement_state::ClassifyAnimState(moveSpeed, flags);
+        uint8_t moveSpeedU8 = movement_state::EncodeMoveSpeed(moveSpeed);
 
         PacketWriter writer;
         writer.WriteHeader(MessageType::C2S_PositionUpdate);
@@ -3054,8 +3153,9 @@ void Core::PollLocalPositions() {
 
         s_pollsSent++;
         if (s_pollsSent <= 20 || s_pollsSent % 200 == 0) {
-            spdlog::debug("Core::PollLocalPositions: sent #{} netId={} pos=({:.1f},{:.1f},{:.1f}) speed={:.1f}",
-                          s_pollsSent, netId, pos.x, pos.y, pos.z, moveSpeed);
+            spdlog::debug("Core::PollLocalPositions: sent #{} netId={} pos=({:.1f},{:.1f},{:.1f}) speed={:.1f} speedU8={} anim={} flags=0x{:04X} runOrder={}",
+                          s_pollsSent, netId, pos.x, pos.y, pos.z, moveSpeed, moveSpeedU8, animState, flags,
+                          order_hooks::GetLastRunSpeedOrder());
         }
     }
 }
@@ -3573,9 +3673,9 @@ void Core::BackgroundReadEntities() {
         pp.cp.posY = pos.y;
         pp.cp.posZ = pos.z;
         pp.cp.compressedQuat = rot.Compress();
-        pp.cp.animStateId = animState;
-        pp.cp.moveSpeed = static_cast<uint8_t>(std::min(255.f, speed / 15.f * 255.f));
-        pp.cp.flags = (speed > 3.0f) ? 0x01 : 0x00;
+        pp.cp.flags = movement_state::BuildPositionFlags(speed, order_hooks::GetLocalOrderFlags());
+        pp.cp.animStateId = movement_state::ClassifyAnimState(speed, pp.cp.flags);
+        pp.cp.moveSpeed = movement_state::EncodeMoveSpeed(speed);
         pp.netId = netId;
         pp.pos = pos;
         pp.rot = rot;

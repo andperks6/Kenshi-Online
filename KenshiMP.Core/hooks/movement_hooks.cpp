@@ -1,7 +1,9 @@
 #include "movement_hooks.h"
 #include "ai_hooks.h"
 #include "../core.h"
+#include "order_hooks.h"
 #include "../game/game_types.h"
+#include "../sync/movement_state.h"
 #include "kmp/hook_manager.h"
 #include "kmp/protocol.h"
 #include "kmp/constants.h"
@@ -100,19 +102,9 @@ static void __fastcall Hook_SetPosition(void* character, float x, float y, float
         moveSpeed = computedSpeed;
     }
 
-    // Derive animation state from speed when offset is unavailable
-    uint8_t animState = accessor.GetAnimState();
-    if (animState == 0 && moveSpeed > 0.5f) {
-        animState = (moveSpeed > 5.0f) ? 2 : 1; // 1=walking, 2=running
-    }
-
-    // Map move speed (0..15 m/s) to uint8 (0..255)
-    uint8_t moveSpeedU8 = static_cast<uint8_t>(
-        std::min(255.f, moveSpeed / 15.f * 255.f));
-
-    // Determine flags
-    uint16_t flags = 0;
-    if (moveSpeed > 3.0f) flags |= 0x01; // running
+    uint16_t flags = movement_state::BuildPositionFlags(moveSpeed, order_hooks::GetLocalOrderFlags());
+    uint8_t animState = movement_state::ClassifyAnimState(moveSpeed, flags);
+    uint8_t moveSpeedU8 = movement_state::EncodeMoveSpeed(moveSpeed);
 
     // Send position update
     PacketWriter writer;
