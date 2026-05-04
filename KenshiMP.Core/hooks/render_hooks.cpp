@@ -167,7 +167,8 @@ static LRESULT WndProcInner(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     // WM_KEYDOWN: forward control keys to active UI, always consume when modal
     if (uMsg == WM_KEYDOWN && wParam != VK_F1 && wParam != VK_ESCAPE) {
         if (chatActive) {
-            if (wParam == VK_BACK || wParam == VK_RETURN) {
+            if (wParam == VK_BACK || wParam == VK_RETURN ||
+                wParam == VK_UP || wParam == VK_DOWN) {
                 Core::Get().GetNativeHud().OnChatKeyDown(static_cast<int>(wParam));
             }
             return 0; // consume ALL keydowns when chat is active

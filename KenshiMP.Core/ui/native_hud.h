@@ -86,6 +86,8 @@ private:
     bool m_showLogPanel = true;  // Visible by default during loading
     bool m_chatInputActive = false;
     std::string m_chatInputText;
+    std::deque<std::string> m_chatInputHistory;
+    int m_chatHistoryIndex = -1;
     int m_frameCounter = 0;
 
     // Chat message history

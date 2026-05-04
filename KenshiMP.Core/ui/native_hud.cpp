@@ -527,6 +527,7 @@ void NativeHud::AddSystemMessage(const std::string& message) {
 void NativeHud::OpenChatInput() {
     m_chatInputActive = true;
     m_chatInputText.clear();
+    m_chatHistoryIndex = -1;
     if (m_chatInput) {
         auto& bridge = MyGuiBridge::Get();
         bridge.SetVisible(m_chatInput, true);
@@ -537,6 +538,7 @@ void NativeHud::OpenChatInput() {
 void NativeHud::CloseChatInput() {
     m_chatInputActive = false;
     m_chatInputText.clear();
+    m_chatHistoryIndex = -1;
     if (m_chatInput) {
         auto& bridge = MyGuiBridge::Get();
         bridge.SetVisible(m_chatInput, false);
@@ -571,6 +573,31 @@ void NativeHud::OnChatKeyDown(int vk) {
         CloseChatInput();
     } else if (vk == VK_ESCAPE) {
         CloseChatInput();
+    } else if (vk == VK_UP) {
+        if (!m_chatInputHistory.empty()) {
+            if (m_chatHistoryIndex < 0) {
+                m_chatHistoryIndex = static_cast<int>(m_chatInputHistory.size()) - 1;
+            } else if (m_chatHistoryIndex > 0) {
+                --m_chatHistoryIndex;
+            }
+            m_chatInputText = m_chatInputHistory[static_cast<size_t>(m_chatHistoryIndex)];
+            if (m_chatInput) {
+                MyGuiBridge::Get().SetCaption(m_chatInput, "> " + m_chatInputText + "_");
+            }
+        }
+    } else if (vk == VK_DOWN) {
+        if (m_chatHistoryIndex >= 0) {
+            if (m_chatHistoryIndex + 1 < static_cast<int>(m_chatInputHistory.size())) {
+                ++m_chatHistoryIndex;
+                m_chatInputText = m_chatInputHistory[static_cast<size_t>(m_chatHistoryIndex)];
+            } else {
+                m_chatHistoryIndex = -1;
+                m_chatInputText.clear();
+            }
+            if (m_chatInput) {
+                MyGuiBridge::Get().SetCaption(m_chatInput, "> " + m_chatInputText + "_");
+            }
+        }
     }
 }
 
@@ -580,6 +607,14 @@ void NativeHud::SendChatMessage() {
     auto& core = Core::Get();
 
     // ── Handle slash commands via CommandRegistry ──
+    if (m_chatInputHistory.empty() || m_chatInputHistory.back() != m_chatInputText) {
+        m_chatInputHistory.push_back(m_chatInputText);
+        while (m_chatInputHistory.size() > 50) {
+            m_chatInputHistory.pop_front();
+        }
+    }
+    m_chatHistoryIndex = -1;
+
     if (m_chatInputText[0] == '/') {
         std::string result = CommandRegistry::Get().Execute(m_chatInputText);
         if (!result.empty()) {

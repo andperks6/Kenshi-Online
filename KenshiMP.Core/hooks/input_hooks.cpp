@@ -104,7 +104,8 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lPa
 
     if (hud.IsChatInputActive()) {
         if (keyDown) {
-            if (vk == VK_RETURN || vk == VK_BACK || vk == VK_ESCAPE) {
+            if (vk == VK_RETURN || vk == VK_BACK || vk == VK_ESCAPE ||
+                vk == VK_UP || vk == VK_DOWN) {
                 hud.OnChatKeyDown(static_cast<int>(vk));
             } else {
                 wchar_t ch = 0;
